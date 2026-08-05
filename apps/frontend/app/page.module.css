@@ -2,3 +2,41 @@
   width: 100vw;
   height: 100svh;
 }
+
+.modeButton {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  padding: 9px 12px 9px 10px;
+  border: none;
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: var(--foreground-muted, #9aa0ab);
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+
+.modeButton:hover {
+  color: var(--foreground, inherit);
+}
+
+.modeButtonActive {
+  border-left-color: var(--accent-bright, #2dd4bf);
+  color: var(--foreground, inherit);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.modeButtonBadge {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent-bright, #2dd4bf);
+}
