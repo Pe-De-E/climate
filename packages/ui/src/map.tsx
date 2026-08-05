@@ -25,6 +25,35 @@ const fetchTemperature = async (lat: number, lng: number) => {
   return `${data.temperature}${data.unit}` as string;
 };
 
+const HISTORY_API_URL = "http://localhost:3001/api/weather/history";
+
+interface HistoryInfo {
+  recentYear: number;
+  pastYear: number;
+  unit: string;
+  recentMonthly: (number | null)[];
+  pastMonthly: (number | null)[];
+}
+
+const fetchHistory = async (lat: number, lng: number): Promise<HistoryInfo> => {
+  const res = await fetch(`${HISTORY_API_URL}?lat=${lat}&lng=${lng}`);
+  if (!res.ok) throw new Error(`history API responded with ${res.status}`);
+  const data = await res.json();
+  return {
+    recentYear: data.recentYear,
+    pastYear: data.pastYear,
+    unit: data.unit,
+    recentMonthly: data.recent.monthlyMeans,
+    pastMonthly: data.past.monthlyMeans,
+  };
+};
+
+const MONTH_LABELS = Array.from({ length: 12 }, (_, i) =>
+  new Intl.DateTimeFormat("de-DE", { month: "short" }).format(
+    new Date(2000, i, 1),
+  ),
+);
+
 export type MapMode = "local";
 
 interface MapProps {
@@ -39,6 +68,7 @@ interface MapProps {
 interface LocalInfo {
   place: string;
   temperature: string;
+  history: HistoryInfo | null;
 }
 
 export const Map = ({
@@ -70,10 +100,12 @@ export const Map = ({
       map.on("click", async (e) => {
         if (modeRef.current !== "local") return;
         const { lat, lng } = e.latlng;
-        const [placeResult, temperatureResult] = await Promise.allSettled([
-          reverseGeocode(lat, lng),
-          fetchTemperature(lat, lng),
-        ]);
+        const [placeResult, temperatureResult, historyResult] =
+          await Promise.allSettled([
+            reverseGeocode(lat, lng),
+            fetchTemperature(lat, lng),
+            fetchHistory(lat, lng),
+          ]);
         setLocalInfo({
           place:
             placeResult.status === "fulfilled"
@@ -83,7 +115,12 @@ export const Map = ({
             temperatureResult.status === "fulfilled"
               ? temperatureResult.value
               : "nicht verfügbar",
+          history:
+            historyResult.status === "fulfilled" ? historyResult.value : null,
         });
+        if (historyResult.status === "rejected") {
+          console.error("history fetch failed:", historyResult.reason);
+        }
       });
       mapRef.current = map;
       onMapLoad?.(map);
@@ -112,6 +149,60 @@ export const Map = ({
         title={localInfo?.place}
       >
         <p>Aktuelle Temperatur: {localInfo?.temperature}</p>
+        <div style={{ marginTop: 16 }}>
+          {localInfo?.history ? (
+            <div style={{ overflowX: "auto" }}>
+              <table
+                style={{
+                  borderCollapse: "collapse",
+                  width: "100%",
+                  fontSize: 14,
+                }}
+              >
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left", padding: "4px 8px" }}>
+                      Monat
+                    </th>
+                    <th style={{ textAlign: "right", padding: "4px 8px" }}>
+                      {localInfo.history.pastYear}
+                    </th>
+                    <th style={{ textAlign: "right", padding: "4px 8px" }}>
+                      {localInfo.history.recentYear}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {MONTH_LABELS.map((label, i) => (
+                    <tr
+                      key={label}
+                      style={{
+                        borderTop:
+                          "1px solid var(--border, rgba(255,255,255,0.08))",
+                      }}
+                    >
+                      <td style={{ padding: "4px 8px" }}>{label}</td>
+                      <td style={{ textAlign: "right", padding: "4px 8px" }}>
+                        {localInfo.history?.pastMonthly[i] ?? "n/a"}
+                        {localInfo.history?.pastMonthly[i] != null
+                          ? localInfo.history.unit
+                          : ""}
+                      </td>
+                      <td style={{ textAlign: "right", padding: "4px 8px" }}>
+                        {localInfo.history?.recentMonthly[i] ?? "n/a"}
+                        {localInfo.history?.recentMonthly[i] != null
+                          ? localInfo.history.unit
+                          : ""}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p>Verlauf nicht verfügbar</p>
+          )}
+        </div>
       </Modal>
     </>
   );
