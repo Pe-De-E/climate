@@ -45,31 +45,37 @@ weatherRouter.get("/history", async (req, res) => {
     return;
   }
 
-  const yearsAgo = Number(req.query.yearsAgo ?? DEFAULT_YEARS_AGO);
-  if (!Number.isInteger(yearsAgo) || yearsAgo < 1) {
-    res.status(400).json({ error: "yearsAgo must be a positive integer" });
-    return;
+  const lastFullYear = new Date().getUTCFullYear() - 1;
+  const year1 = Number(req.query.year1 ?? lastFullYear - DEFAULT_YEARS_AGO);
+  const year2 = Number(req.query.year2 ?? lastFullYear);
+
+  for (const [name, year] of [
+    ["year1", year1],
+    ["year2", year2],
+  ] as const) {
+    if (!Number.isInteger(year) || year < ARCHIVE_START_YEAR || year > lastFullYear) {
+      res.status(400).json({
+        error: `${name} must be an integer between ${ARCHIVE_START_YEAR} and ${lastFullYear}`,
+      });
+      return;
+    }
   }
 
-  const recentYear = new Date().getUTCFullYear() - 1;
-  const pastYear = recentYear - yearsAgo;
-  if (pastYear < ARCHIVE_START_YEAR) {
-    res.status(400).json({
-      error: `yearsAgo is out of range: the archive only covers years from ${ARCHIVE_START_YEAR} onward`,
-    });
+  if (year1 === year2) {
+    res.status(400).json({ error: "year1 and year2 must be different" });
     return;
   }
 
   const { latGrid, lngGrid } = snapToGrid(lat, lng);
 
-  const [recentResult, pastResult] = await Promise.allSettled([
-    getOrFetchYear(latGrid, lngGrid, recentYear),
-    getOrFetchYear(latGrid, lngGrid, pastYear),
+  const [result1, result2] = await Promise.allSettled([
+    getOrFetchYear(latGrid, lngGrid, year1),
+    getOrFetchYear(latGrid, lngGrid, year2),
   ]);
 
   const failedYears = [
-    recentResult.status === "rejected" ? recentYear : null,
-    pastResult.status === "rejected" ? pastYear : null,
+    result1.status === "rejected" ? year1 : null,
+    result2.status === "rejected" ? year2 : null,
   ].filter((year): year is number => year !== null);
 
   if (failedYears.length > 0) {
@@ -79,15 +85,19 @@ weatherRouter.get("/history", async (req, res) => {
     return;
   }
 
-  const recent = (recentResult as PromiseFulfilledResult<Awaited<ReturnType<typeof getOrFetchYear>>>).value;
-  const past = (pastResult as PromiseFulfilledResult<Awaited<ReturnType<typeof getOrFetchYear>>>).value;
+  const data1 = (
+    result1 as PromiseFulfilledResult<Awaited<ReturnType<typeof getOrFetchYear>>>
+  ).value;
+  const data2 = (
+    result2 as PromiseFulfilledResult<Awaited<ReturnType<typeof getOrFetchYear>>>
+  ).value;
 
   res.json({
     coordinates: { lat, lng, latGrid, lngGrid },
-    unit: recent.unit,
-    recentYear,
-    pastYear,
-    recent: { year: recentYear, monthlyMeans: recent.monthlyMeans },
-    past: { year: pastYear, monthlyMeans: past.monthlyMeans },
+    unit: data1.unit,
+    years: [
+      { year: year1, monthlyMeans: data1.monthlyMeans },
+      { year: year2, monthlyMeans: data2.monthlyMeans },
+    ],
   });
 });

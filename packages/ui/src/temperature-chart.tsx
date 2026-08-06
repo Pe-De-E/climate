@@ -160,6 +160,7 @@ interface TemperatureChartProps {
   recentMonthly: (number | null)[];
   unit: string;
   onSelectPastYear?: (year: number) => void;
+  onSelectRecentYear?: (year: number) => void;
 }
 
 export const TemperatureChart = ({
@@ -169,11 +170,13 @@ export const TemperatureChart = ({
   recentMonthly,
   unit,
   onSelectPastYear,
+  onSelectRecentYear,
 }: TemperatureChartProps) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
-  const [isPickerOpen, setIsPickerOpen] = useState(false);
+  const [openPicker, setOpenPicker] = useState<"past" | "recent" | null>(null);
   const gradientIdPrefix = useId();
+  const maxSelectableYear = new Date().getUTCFullYear() - 1;
 
   const allValues = [...pastMonthly, ...recentMonthly].filter(
     (v): v is number => v !== null && v !== undefined,
@@ -249,23 +252,47 @@ export const TemperatureChart = ({
           <LegendPill
             color={SERIES_PAST}
             label={String(pastYear)}
-            onClick={() => setIsPickerOpen(true)}
+            onClick={() => setOpenPicker("past")}
           />
         ) : (
           <LegendPill color={SERIES_PAST} label={String(pastYear)} />
         )}
-        <LegendPill color={SERIES_RECENT} label={String(recentYear)} />
+        {onSelectRecentYear ? (
+          <LegendPill
+            color={SERIES_RECENT}
+            label={String(recentYear)}
+            onClick={() => setOpenPicker("recent")}
+          />
+        ) : (
+          <LegendPill color={SERIES_RECENT} label={String(recentYear)} />
+        )}
       </div>
 
       {onSelectPastYear && (
         <YearPickerModal
-          open={isPickerOpen}
-          onClose={() => setIsPickerOpen(false)}
+          open={openPicker === "past"}
+          onClose={() => setOpenPicker(null)}
+          title="Erstes Jahr wählen"
+          color={SERIES_PAST}
           initialYear={pastYear}
-          maxYear={recentYear - 1}
+          maxYear={maxSelectableYear}
           onConfirm={(year) => {
-            setIsPickerOpen(false);
+            setOpenPicker(null);
             onSelectPastYear(year);
+          }}
+        />
+      )}
+      {onSelectRecentYear && (
+        <YearPickerModal
+          open={openPicker === "recent"}
+          onClose={() => setOpenPicker(null)}
+          title="Zweites Jahr wählen"
+          color={SERIES_RECENT}
+          initialYear={recentYear}
+          maxYear={maxSelectableYear}
+          onConfirm={(year) => {
+            setOpenPicker(null);
+            onSelectRecentYear(year);
           }}
         />
       )}
@@ -533,12 +560,16 @@ const EndMarker = ({ x, y, color }: { x: number; y: number; color: string }) => 
 const YearPickerModal = ({
   open,
   onClose,
+  title,
+  color,
   initialYear,
   maxYear,
   onConfirm,
 }: {
   open: boolean;
   onClose: () => void;
+  title: string;
+  color: string;
   initialYear: number;
   maxYear: number;
   onConfirm: (year: number) => void;
@@ -550,13 +581,7 @@ const YearPickerModal = ({
   }, [open, initialYear]);
 
   return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Vergangenheitsjahr wählen"
-      width="360px"
-      height="auto"
-    >
+    <Modal open={open} onClose={onClose} title={title} width="360px" height="auto">
       <div style={{ fontSize: 32, fontWeight: 600, textAlign: "center", marginBottom: 16 }}>
         {year}
       </div>
@@ -566,7 +591,7 @@ const YearPickerModal = ({
         max={maxYear}
         value={year}
         onChange={(e) => setYear(Number(e.target.value))}
-        style={{ width: "100%", accentColor: SERIES_PAST }}
+        style={{ width: "100%", accentColor: color }}
       />
       <div
         style={{
