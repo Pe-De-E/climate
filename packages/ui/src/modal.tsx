@@ -7,9 +7,18 @@ interface ModalProps {
   onClose: () => void;
   title?: ReactNode;
   children?: ReactNode;
+  width?: string;
+  height?: string;
 }
 
-export const Modal = ({ open, onClose, title, children }: ModalProps) => {
+export const Modal = ({
+  open,
+  onClose,
+  title,
+  children,
+  width = "90vw",
+  height = "90vh",
+}: ModalProps) => {
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -42,8 +51,8 @@ export const Modal = ({ open, onClose, title, children }: ModalProps) => {
           border: "1px solid var(--border, rgba(0,0,0,0.08))",
           borderRadius: 12,
           overflow: "hidden",
-          width: "90vw",
-          height: "90vh",
+          width,
+          height,
           display: "flex",
           flexDirection: "column",
           boxShadow: "0 10px 40px rgba(0,0,0,0.4)",

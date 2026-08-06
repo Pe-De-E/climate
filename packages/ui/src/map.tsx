@@ -36,8 +36,14 @@ interface HistoryInfo {
   pastMonthly: (number | null)[];
 }
 
-const fetchHistory = async (lat: number, lng: number): Promise<HistoryInfo> => {
-  const res = await fetch(`${HISTORY_API_URL}?lat=${lat}&lng=${lng}`);
+const fetchHistory = async (
+  lat: number,
+  lng: number,
+  yearsAgo: number,
+): Promise<HistoryInfo> => {
+  const res = await fetch(
+    `${HISTORY_API_URL}?lat=${lat}&lng=${lng}&yearsAgo=${yearsAgo}`,
+  );
   if (!res.ok) throw new Error(`history API responded with ${res.status}`);
   const data = await res.json();
   return {
@@ -48,6 +54,8 @@ const fetchHistory = async (lat: number, lng: number): Promise<HistoryInfo> => {
     pastMonthly: data.past.monthlyMeans,
   };
 };
+
+const DEFAULT_YEARS_AGO = 40;
 
 const MONTH_LABELS = Array.from({ length: 12 }, (_, i) =>
   new Intl.DateTimeFormat("de-DE", { month: "short" }).format(
@@ -103,9 +111,41 @@ export const Map = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const [session, setSession] = useState<LocalSession | null>(null);
+  const [lastLatLng, setLastLatLng] = useState<{ lat: number; lng: number } | null>(
+    null,
+  );
   const modeRef = useRef(mode);
   modeRef.current = mode;
   const requestIdRef = useRef(0);
+  const historyFetchIdRef = useRef(0);
+
+  const loadHistory = (lat: number, lng: number, yearsAgo: number) => {
+    const locationRequestId = requestIdRef.current;
+    const fetchId = ++historyFetchIdRef.current;
+    const isStale = () =>
+      requestIdRef.current !== locationRequestId ||
+      historyFetchIdRef.current !== fetchId;
+
+    setSession((s) => s && { ...s, history: { status: "loading" } });
+
+    fetchHistory(lat, lng, yearsAgo).then(
+      (value) => {
+        if (isStale()) return;
+        setSession((s) => s && { ...s, history: { status: "done", value } });
+      },
+      (error) => {
+        if (isStale()) return;
+        console.error("history fetch failed:", error);
+        setSession((s) => s && { ...s, history: { status: "error" } });
+      },
+    );
+  };
+
+  const handleSelectPastYear = (year: number) => {
+    if (!lastLatLng || session?.history.status !== "done") return;
+    const yearsAgo = session.history.value.recentYear - year;
+    loadHistory(lastLatLng.lat, lastLatLng.lng, yearsAgo);
+  };
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -126,6 +166,7 @@ export const Map = ({
         const requestId = ++requestIdRef.current;
         const isStale = () => requestIdRef.current !== requestId;
 
+        setLastLatLng({ lat, lng });
         setSession({
           place: { status: "loading" },
           temperature: { status: "loading" },
@@ -156,17 +197,7 @@ export const Map = ({
           },
         );
 
-        fetchHistory(lat, lng).then(
-          (value) => {
-            if (isStale()) return;
-            setSession((s) => s && { ...s, history: { status: "done", value } });
-          },
-          (error) => {
-            if (isStale()) return;
-            console.error("history fetch failed:", error);
-            setSession((s) => s && { ...s, history: { status: "error" } });
-          },
-        );
+        loadHistory(lat, lng, DEFAULT_YEARS_AGO);
       });
       mapRef.current = map;
       onMapLoad?.(map);
@@ -224,7 +255,10 @@ export const Map = ({
         </p>
         <div style={{ marginTop: 16 }}>
           {session?.history.status === "done" ? (
-            <HistoryContent history={session.history.value} />
+            <HistoryContent
+              history={session.history.value}
+              onSelectPastYear={handleSelectPastYear}
+            />
           ) : session?.history.status === "error" ? (
             <p>Verlauf nicht verfügbar</p>
           ) : (
@@ -243,7 +277,13 @@ export const Map = ({
   );
 };
 
-const HistoryContent = ({ history }: { history: HistoryInfo }) => (
+const HistoryContent = ({
+  history,
+  onSelectPastYear,
+}: {
+  history: HistoryInfo;
+  onSelectPastYear: (year: number) => void;
+}) => (
   <>
     <TemperatureChart
       pastYear={history.pastYear}
@@ -251,6 +291,7 @@ const HistoryContent = ({ history }: { history: HistoryInfo }) => (
       pastMonthly={history.pastMonthly}
       recentMonthly={history.recentMonthly}
       unit={history.unit}
+      onSelectPastYear={onSelectPastYear}
     />
     <details style={{ marginTop: 16 }}>
       <summary

@@ -1,6 +1,16 @@
 "use client";
 
-import { useId, useMemo, useRef, useState, type PointerEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent,
+} from "react";
+import { Modal } from "./modal";
+
+const ARCHIVE_START_YEAR = 1940;
 
 // Categorical slots 1 (blue) & 2 (orange) from the validated dataviz palette —
 // checked with scripts/validate_palette.js against this app's dark surface
@@ -63,24 +73,29 @@ function monotonePath(points: { x: number; y: number }[]) {
   const dy: number[] = [];
   const m: number[] = [];
   for (let i = 0; i < n - 1; i++) {
-    dx[i] = points[i + 1].x - points[i].x;
-    dy[i] = points[i + 1].y - points[i].y;
-    m[i] = dy[i] / dx[i];
+    const p0 = points[i]!;
+    const p1 = points[i + 1]!;
+    dx[i] = p1.x - p0.x;
+    dy[i] = p1.y - p0.y;
+    m[i] = dy[i]! / dx[i]!;
   }
-  const t = new Array(n);
-  t[0] = m[0];
-  t[n - 1] = m[n - 2];
+  const t: number[] = new Array(n);
+  t[0] = m[0]!;
+  t[n - 1] = m[n - 2]!;
   for (let i = 1; i < n - 1; i++) {
-    t[i] = m[i - 1] * m[i] <= 0 ? 0 : (m[i - 1] + m[i]) / 2;
+    t[i] = m[i - 1]! * m[i]! <= 0 ? 0 : (m[i - 1]! + m[i]!) / 2;
   }
-  let d = `M${points[0].x},${points[0].y} `;
+  const start = points[0]!;
+  let d = `M${start.x},${start.y} `;
   for (let i = 0; i < n - 1; i++) {
-    const h = dx[i];
-    const cp1x = points[i].x + h / 3;
-    const cp1y = points[i].y + (t[i] * h) / 3;
-    const cp2x = points[i + 1].x - h / 3;
-    const cp2y = points[i + 1].y - (t[i + 1] * h) / 3;
-    d += `C${cp1x},${cp1y} ${cp2x},${cp2y} ${points[i + 1].x},${points[i + 1].y} `;
+    const h = dx[i]!;
+    const p0 = points[i]!;
+    const p1 = points[i + 1]!;
+    const cp1x = p0.x + h / 3;
+    const cp1y = p0.y + (t[i]! * h) / 3;
+    const cp2x = p1.x - h / 3;
+    const cp2y = p1.y - (t[i + 1]! * h) / 3;
+    d += `C${cp1x},${cp1y} ${cp2x},${cp2y} ${p1.x},${p1.y} `;
   }
   return d.trim();
 }
@@ -117,8 +132,8 @@ function buildSmoothAreaPath(
         y: yForValue(values[i] as number),
       }));
       const line = monotonePath(points);
-      const first = points[0];
-      const last = points[points.length - 1];
+      const first = points[0]!;
+      const last = points[points.length - 1]!;
       return `${line} L${last.x},${baselineY} L${first.x},${baselineY} Z`;
     })
     .filter(Boolean)
@@ -144,6 +159,7 @@ interface TemperatureChartProps {
   pastMonthly: (number | null)[];
   recentMonthly: (number | null)[];
   unit: string;
+  onSelectPastYear?: (year: number) => void;
 }
 
 export const TemperatureChart = ({
@@ -152,9 +168,11 @@ export const TemperatureChart = ({
   pastMonthly,
   recentMonthly,
   unit,
+  onSelectPastYear,
 }: TemperatureChartProps) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
   const gradientIdPrefix = useId();
 
   const allValues = [...pastMonthly, ...recentMonthly].filter(
@@ -178,8 +196,8 @@ export const TemperatureChart = ({
   const recentAvg = average(recentMonthly);
   const delta = pastAvg !== null && recentAvg !== null ? recentAvg - pastAvg : null;
 
-  const yMin = ticks[0];
-  const yMax = ticks[ticks.length - 1];
+  const yMin = ticks[0]!;
+  const yMax = ticks[ticks.length - 1]!;
   const xForIndex = (i: number) => MARGIN.left + (i / 11) * PLOT_WIDTH;
   const yForValue = (v: number) =>
     MARGIN.top + PLOT_HEIGHT * (1 - (v - yMin) / (yMax - yMin));
@@ -227,9 +245,30 @@ export const TemperatureChart = ({
           color: "var(--foreground-muted, #9aa0ab)",
         }}
       >
-        <LegendPill color={SERIES_PAST} label={String(pastYear)} />
+        {onSelectPastYear ? (
+          <LegendPill
+            color={SERIES_PAST}
+            label={String(pastYear)}
+            onClick={() => setIsPickerOpen(true)}
+          />
+        ) : (
+          <LegendPill color={SERIES_PAST} label={String(pastYear)} />
+        )}
         <LegendPill color={SERIES_RECENT} label={String(recentYear)} />
       </div>
+
+      {onSelectPastYear && (
+        <YearPickerModal
+          open={isPickerOpen}
+          onClose={() => setIsPickerOpen(false)}
+          initialYear={pastYear}
+          maxYear={recentYear - 1}
+          onConfirm={(year) => {
+            setIsPickerOpen(false);
+            onSelectPastYear(year);
+          }}
+        />
+      )}
 
       <svg
         ref={svgRef}
@@ -439,29 +478,50 @@ const StatTile = ({
   </div>
 );
 
-const LegendPill = ({ color, label }: { color: string; label: string }) => (
-  <span
-    style={{
-      display: "flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "4px 10px 4px 8px",
-      borderRadius: 999,
-      background: "rgba(255,255,255,0.04)",
-    }}
-  >
-    <span
+const LegendPill = ({
+  color,
+  label,
+  onClick,
+}: {
+  color: string;
+  label: string;
+  onClick?: () => void;
+}) => {
+  const Tag = onClick ? "button" : "span";
+  return (
+    <Tag
+      type={onClick ? "button" : undefined}
+      onClick={onClick}
       style={{
-        display: "inline-block",
-        width: 8,
-        height: 8,
-        borderRadius: "50%",
-        background: color,
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "4px 10px 4px 8px",
+        borderRadius: 999,
+        background: "rgba(255,255,255,0.04)",
+        border: "none",
+        color: "inherit",
+        font: "inherit",
+        fontSize: 13,
+        cursor: onClick ? "pointer" : "default",
       }}
-    />
-    {label}
-  </span>
-);
+    >
+      <span
+        style={{
+          display: "inline-block",
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: color,
+        }}
+      />
+      {label}
+      {onClick && (
+        <span style={{ fontSize: 10, opacity: 0.6 }}>▾</span>
+      )}
+    </Tag>
+  );
+};
 
 const EndMarker = ({ x, y, color }: { x: number; y: number; color: string }) => (
   <>
@@ -469,3 +529,75 @@ const EndMarker = ({ x, y, color }: { x: number; y: number; color: string }) => 
     <circle cx={x} cy={y} r={4} fill={color} stroke="var(--surface, #1a1d24)" strokeWidth={2} />
   </>
 );
+
+const YearPickerModal = ({
+  open,
+  onClose,
+  initialYear,
+  maxYear,
+  onConfirm,
+}: {
+  open: boolean;
+  onClose: () => void;
+  initialYear: number;
+  maxYear: number;
+  onConfirm: (year: number) => void;
+}) => {
+  const [year, setYear] = useState(initialYear);
+
+  useEffect(() => {
+    if (open) setYear(initialYear);
+  }, [open, initialYear]);
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Vergangenheitsjahr wählen"
+      width="360px"
+      height="auto"
+    >
+      <div style={{ fontSize: 32, fontWeight: 600, textAlign: "center", marginBottom: 16 }}>
+        {year}
+      </div>
+      <input
+        type="range"
+        min={ARCHIVE_START_YEAR}
+        max={maxYear}
+        value={year}
+        onChange={(e) => setYear(Number(e.target.value))}
+        style={{ width: "100%", accentColor: SERIES_PAST }}
+      />
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          fontSize: 12,
+          color: "var(--foreground-muted, #9aa0ab)",
+          marginTop: 4,
+          marginBottom: 20,
+        }}
+      >
+        <span>{ARCHIVE_START_YEAR}</span>
+        <span>{maxYear}</span>
+      </div>
+      <button
+        type="button"
+        onClick={() => onConfirm(year)}
+        style={{
+          width: "100%",
+          padding: "10px 16px",
+          borderRadius: 8,
+          border: "none",
+          background: "var(--accent, #0f766e)",
+          color: "#fff",
+          font: "inherit",
+          fontWeight: 600,
+          cursor: "pointer",
+        }}
+      >
+        Übernehmen
+      </button>
+    </Modal>
+  );
+};
