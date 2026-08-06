@@ -17,7 +17,10 @@ const reverseGeocode = async (lat: number, lng: number) => {
   return (data.display_name as string | undefined) ?? "Unbekannter Ort";
 };
 
-const WEATHER_API_URL = "http://localhost:3001/api/weather/current";
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
+
+const WEATHER_API_URL = `${BACKEND_URL}/api/weather/current`;
 
 const fetchTemperature = async (lat: number, lng: number) => {
   const res = await fetch(`${WEATHER_API_URL}?lat=${lat}&lng=${lng}`);
@@ -26,7 +29,7 @@ const fetchTemperature = async (lat: number, lng: number) => {
   return `${data.temperature}${data.unit}` as string;
 };
 
-const HISTORY_API_URL = "http://localhost:3001/api/weather/history";
+const HISTORY_API_URL = `${BACKEND_URL}/api/weather/history`;
 
 interface HistoryInfo {
   recentYear: number;
