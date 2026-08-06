@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { Modal } from "./modal";
+import { TemperatureChart } from "./temperature-chart";
 
 const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
 const TILE_ATTRIBUTION =
@@ -13,7 +14,7 @@ const reverseGeocode = async (lat: number, lng: number) => {
   const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`;
   const res = await fetch(url);
   const data = await res.json();
-  return data.display_name as string | undefined;
+  return (data.display_name as string | undefined) ?? "Unbekannter Ort";
 };
 
 const WEATHER_API_URL = "http://localhost:3001/api/weather/current";
@@ -65,11 +66,32 @@ interface MapProps {
   onMapLoad?: (map: L.Map) => void;
 }
 
-interface LocalInfo {
-  place: string;
-  temperature: string;
-  history: HistoryInfo | null;
+type FieldState<T> =
+  | { status: "loading" }
+  | { status: "done"; value: T }
+  | { status: "error" };
+
+interface LocalSession {
+  place: FieldState<string>;
+  temperature: FieldState<string>;
+  history: FieldState<HistoryInfo>;
 }
+
+const Skeleton = ({ width, height }: { width: number | string; height: number }) => (
+  <span
+    style={{
+      display: "inline-block",
+      width,
+      height,
+      borderRadius: 4,
+      background:
+        "linear-gradient(90deg, var(--border, #2a2d36) 25%, rgba(255,255,255,0.08) 50%, var(--border, #2a2d36) 75%)",
+      backgroundSize: "200% 100%",
+      animation:
+        "weather-skeleton-shimmer 1.4s ease-in-out infinite, weather-skeleton-pulse 1.8s ease-in-out infinite",
+    }}
+  />
+);
 
 export const Map = ({
   className,
@@ -80,9 +102,10 @@ export const Map = ({
 }: MapProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
-  const [localInfo, setLocalInfo] = useState<LocalInfo | null>(null);
+  const [session, setSession] = useState<LocalSession | null>(null);
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -97,30 +120,53 @@ export const Map = ({
       );
       L.control.zoom({ position: "topright" }).addTo(map);
       L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION }).addTo(map);
-      map.on("click", async (e) => {
+      map.on("click", (e) => {
         if (modeRef.current !== "local") return;
         const { lat, lng } = e.latlng;
-        const [placeResult, temperatureResult, historyResult] =
-          await Promise.allSettled([
-            reverseGeocode(lat, lng),
-            fetchTemperature(lat, lng),
-            fetchHistory(lat, lng),
-          ]);
-        setLocalInfo({
-          place:
-            placeResult.status === "fulfilled"
-              ? (placeResult.value ?? "Unbekannter Ort")
-              : "Ort konnte nicht ermittelt werden",
-          temperature:
-            temperatureResult.status === "fulfilled"
-              ? temperatureResult.value
-              : "nicht verfügbar",
-          history:
-            historyResult.status === "fulfilled" ? historyResult.value : null,
+        const requestId = ++requestIdRef.current;
+        const isStale = () => requestIdRef.current !== requestId;
+
+        setSession({
+          place: { status: "loading" },
+          temperature: { status: "loading" },
+          history: { status: "loading" },
         });
-        if (historyResult.status === "rejected") {
-          console.error("history fetch failed:", historyResult.reason);
-        }
+
+        reverseGeocode(lat, lng).then(
+          (value) => {
+            if (isStale()) return;
+            setSession((s) => s && { ...s, place: { status: "done", value } });
+          },
+          () => {
+            if (isStale()) return;
+            setSession((s) => s && { ...s, place: { status: "error" } });
+          },
+        );
+
+        fetchTemperature(lat, lng).then(
+          (value) => {
+            if (isStale()) return;
+            setSession(
+              (s) => s && { ...s, temperature: { status: "done", value } },
+            );
+          },
+          () => {
+            if (isStale()) return;
+            setSession((s) => s && { ...s, temperature: { status: "error" } });
+          },
+        );
+
+        fetchHistory(lat, lng).then(
+          (value) => {
+            if (isStale()) return;
+            setSession((s) => s && { ...s, history: { status: "done", value } });
+          },
+          (error) => {
+            if (isStale()) return;
+            console.error("history fetch failed:", error);
+            setSession((s) => s && { ...s, history: { status: "error" } });
+          },
+        );
       });
       mapRef.current = map;
       onMapLoad?.(map);
@@ -138,72 +184,119 @@ export const Map = ({
 
   return (
     <>
+      <style>{`
+        @keyframes weather-skeleton-shimmer {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+        @keyframes weather-skeleton-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.6; }
+        }
+      `}</style>
       <div
         ref={containerRef}
         className={className}
         style={{ width: "100%", height: "100%" }}
       />
       <Modal
-        open={!!localInfo}
-        onClose={() => setLocalInfo(null)}
-        title={localInfo?.place}
-      >
-        <p>Aktuelle Temperatur: {localInfo?.temperature}</p>
-        <div style={{ marginTop: 16 }}>
-          {localInfo?.history ? (
-            <div style={{ overflowX: "auto" }}>
-              <table
-                style={{
-                  borderCollapse: "collapse",
-                  width: "100%",
-                  fontSize: 14,
-                }}
-              >
-                <thead>
-                  <tr>
-                    <th style={{ textAlign: "left", padding: "4px 8px" }}>
-                      Monat
-                    </th>
-                    <th style={{ textAlign: "right", padding: "4px 8px" }}>
-                      {localInfo.history.pastYear}
-                    </th>
-                    <th style={{ textAlign: "right", padding: "4px 8px" }}>
-                      {localInfo.history.recentYear}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {MONTH_LABELS.map((label, i) => (
-                    <tr
-                      key={label}
-                      style={{
-                        borderTop:
-                          "1px solid var(--border, rgba(255,255,255,0.08))",
-                      }}
-                    >
-                      <td style={{ padding: "4px 8px" }}>{label}</td>
-                      <td style={{ textAlign: "right", padding: "4px 8px" }}>
-                        {localInfo.history?.pastMonthly[i] ?? "n/a"}
-                        {localInfo.history?.pastMonthly[i] != null
-                          ? localInfo.history.unit
-                          : ""}
-                      </td>
-                      <td style={{ textAlign: "right", padding: "4px 8px" }}>
-                        {localInfo.history?.recentMonthly[i] ?? "n/a"}
-                        {localInfo.history?.recentMonthly[i] != null
-                          ? localInfo.history.unit
-                          : ""}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+        open={!!session}
+        onClose={() => setSession(null)}
+        title={
+          session?.place.status === "done" ? (
+            session.place.value
+          ) : session?.place.status === "error" ? (
+            "Ort konnte nicht ermittelt werden"
           ) : (
+            <Skeleton width={140} height={16} />
+          )
+        }
+      >
+        <p>
+          Aktuelle Temperatur:{" "}
+          {session?.temperature.status === "done" ? (
+            session.temperature.value
+          ) : session?.temperature.status === "error" ? (
+            "nicht verfügbar"
+          ) : (
+            <Skeleton width={60} height={14} />
+          )}
+        </p>
+        <div style={{ marginTop: 16 }}>
+          {session?.history.status === "done" ? (
+            <HistoryContent history={session.history.value} />
+          ) : session?.history.status === "error" ? (
             <p>Verlauf nicht verfügbar</p>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+                <Skeleton width="100%" height={46} />
+                <Skeleton width="100%" height={46} />
+                <Skeleton width="100%" height={46} />
+              </div>
+              <Skeleton width="100%" height={220} />
+            </>
           )}
         </div>
       </Modal>
     </>
   );
 };
+
+const HistoryContent = ({ history }: { history: HistoryInfo }) => (
+  <>
+    <TemperatureChart
+      pastYear={history.pastYear}
+      recentYear={history.recentYear}
+      pastMonthly={history.pastMonthly}
+      recentMonthly={history.recentMonthly}
+      unit={history.unit}
+    />
+    <details style={{ marginTop: 16 }}>
+      <summary
+        style={{
+          cursor: "pointer",
+          color: "var(--foreground-muted, #9aa0ab)",
+          fontSize: 13,
+        }}
+      >
+        Als Tabelle anzeigen
+      </summary>
+      <div style={{ overflowX: "auto", marginTop: 8 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 14 }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", padding: "4px 8px" }}>Monat</th>
+              <th style={{ textAlign: "right", padding: "4px 8px" }}>
+                {history.pastYear}
+              </th>
+              <th style={{ textAlign: "right", padding: "4px 8px" }}>
+                {history.recentYear}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {MONTH_LABELS.map((label, i) => (
+              <tr
+                key={label}
+                style={{
+                  borderTop: "1px solid var(--border, rgba(255,255,255,0.08))",
+                }}
+              >
+                <td style={{ padding: "4px 8px" }}>{label}</td>
+                <td style={{ textAlign: "right", padding: "4px 8px" }}>
+                  {history.pastMonthly[i] ?? "n/a"}
+                  {history.pastMonthly[i] != null ? history.unit : ""}
+                </td>
+                <td style={{ textAlign: "right", padding: "4px 8px" }}>
+                  {history.recentMonthly[i] ?? "n/a"}
+                  {history.recentMonthly[i] != null ? history.unit : ""}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  </>
+);
