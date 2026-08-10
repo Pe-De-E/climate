@@ -2,6 +2,18 @@ import { Router, type Request } from "express";
 import { getOrFetchYear } from "../services/monthlyClimateCache.js";
 import { buildAnomalyGrid, buildGridPoints } from "../services/globalGrid.js";
 import { MonthlyClimate } from "../models/MonthlyClimate.js";
+import {
+  getOrFetchExtremeDayCounts,
+  getBaselineAverage,
+} from "../services/extremeDaysCache.js";
+import {
+  HOT_DAY_MAX_C,
+  FROST_DAY_MIN_C,
+  HEAVY_RAIN_MM,
+  STORM_GUST_KMH,
+  BASELINE_START_YEAR,
+  BASELINE_END_YEAR,
+} from "../services/extremeThresholds.js";
 
 export const weatherRouter: Router = Router();
 
@@ -39,6 +51,19 @@ function parseYearPair(
   }
 
   return { year1, year2 };
+}
+
+function parseSingleYear(
+  req: Request,
+  lastFullYear: number,
+): { year: number } | { error: string } {
+  const year = Number(req.query.year ?? lastFullYear);
+  if (!Number.isInteger(year) || year < ARCHIVE_START_YEAR || year > lastFullYear) {
+    return {
+      error: `year must be an integer between ${ARCHIVE_START_YEAR} and ${lastFullYear}`,
+    };
+  }
+  return { year };
 }
 
 weatherRouter.get("/current", async (req, res) => {
@@ -193,4 +218,55 @@ weatherRouter.get("/global/progress", async (req, res) => {
   });
 
   res.json({ done, total });
+});
+
+// Counts of fixed-threshold "extreme days" (hot/frost/heavy-rain/storm) for
+// a single year at a point, plus the same count averaged over the frozen
+// 1961-1990 baseline period at that same point. Comparing a location to its
+// own baseline sidesteps needing a climate-zone dataset, and the fixed
+// baseline period keeps the comparison meaningful as the climate warms.
+weatherRouter.get("/extremes", async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    res.status(400).json({ error: "lat and lng query params must be numbers" });
+    return;
+  }
+
+  const lastFullYear = new Date().getUTCFullYear() - 1;
+  const parsedYear = parseSingleYear(req, lastFullYear);
+  if ("error" in parsedYear) {
+    res.status(400).json({ error: parsedYear.error });
+    return;
+  }
+  const { year } = parsedYear;
+
+  const { latGrid, lngGrid } = snapToGrid(lat, lng);
+
+  try {
+    const [counts, baseline] = await Promise.all([
+      getOrFetchExtremeDayCounts(latGrid, lngGrid, year),
+      getBaselineAverage(latGrid, lngGrid),
+    ]);
+
+    res.json({
+      coordinates: { lat, lng, latGrid, lngGrid },
+      year,
+      counts,
+      baseline: {
+        period: `${BASELINE_START_YEAR}–${BASELINE_END_YEAR}`,
+        counts: baseline,
+      },
+      thresholds: {
+        hotDayMaxC: HOT_DAY_MAX_C,
+        frostDayMinC: FROST_DAY_MIN_C,
+        heavyRainMm: HEAVY_RAIN_MM,
+        stormGustKmh: STORM_GUST_KMH,
+      },
+    });
+  } catch (error) {
+    console.error("extremes fetch failed:", error);
+    res.status(502).json({ error: "failed to fetch extreme weather data" });
+  }
 });

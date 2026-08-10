@@ -7,6 +7,7 @@ import { Modal } from "./modal";
 import { TemperatureChart } from "./temperature-chart";
 import { GlobalAnomalyLegend } from "./globalAnomalyLegend";
 import { colorForDelta } from "./globalAnomalyColor";
+import { ExtremeWeatherPanel, type ExtremesInfo } from "./extreme-weather-panel";
 
 const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
 const TILE_ATTRIBUTION =
@@ -64,6 +65,27 @@ const fetchHistory = async (
     pastMonthly: first.monthlyMeans,
     recentYear: second.year,
     recentMonthly: second.monthlyMeans,
+  };
+};
+
+const EXTREMES_API_URL = `${BACKEND_URL}/api/weather/extremes`;
+
+const fetchExtremeDays = async (
+  lat: number,
+  lng: number,
+  year: number,
+): Promise<ExtremesInfo> => {
+  const res = await fetch(
+    `${EXTREMES_API_URL}?lat=${lat}&lng=${lng}&year=${year}`,
+  );
+  if (!res.ok) throw new Error(`extremes API responded with ${res.status}`);
+  const data = await res.json();
+  return {
+    year: data.year,
+    counts: data.counts,
+    baselinePeriod: data.baseline.period,
+    baselineCounts: data.baseline.counts,
+    thresholds: data.thresholds,
   };
 };
 
@@ -171,10 +193,16 @@ type FieldState<T> =
   | { status: "done"; value: T }
   | { status: "error" };
 
+type LocalTab = "verlauf" | "extremwetter";
+
 interface LocalSession {
   place: FieldState<string>;
   temperature: FieldState<string>;
   history: FieldState<HistoryInfo>;
+  // null until the Extremwetter tab is opened for the first time — the
+  // baseline fetch behind it can cost dozens of archive API calls on a cold
+  // cache, so it's only triggered on demand, not on every map click.
+  extremes: FieldState<ExtremesInfo> | null;
 }
 
 const Skeleton = ({ width, height }: { width: number | string; height: number }) => (
@@ -219,6 +247,8 @@ export const Map = ({
   modeRef.current = mode;
   const requestIdRef = useRef(0);
   const historyFetchIdRef = useRef(0);
+  const extremesFetchIdRef = useRef(0);
+  const [activeTab, setActiveTab] = useState<LocalTab>("verlauf");
 
   const triggerGlobalGridFetch = () => {
     if (globalGridRequestedRef.current) return;
@@ -251,6 +281,33 @@ export const Map = ({
         setSession((s) => s && { ...s, history: { status: "error" } });
       },
     );
+  };
+
+  const loadExtremes = (lat: number, lng: number, year: number) => {
+    const locationRequestId = requestIdRef.current;
+    const fetchId = ++extremesFetchIdRef.current;
+    const isStale = () =>
+      requestIdRef.current !== locationRequestId ||
+      extremesFetchIdRef.current !== fetchId;
+
+    setSession((s) => s && { ...s, extremes: { status: "loading" } });
+
+    fetchExtremeDays(lat, lng, year).then(
+      (value) => {
+        if (isStale()) return;
+        setSession((s) => s && { ...s, extremes: { status: "done", value } });
+      },
+      (error) => {
+        if (isStale()) return;
+        console.error("extremes fetch failed:", error);
+        setSession((s) => s && { ...s, extremes: { status: "error" } });
+      },
+    );
+  };
+
+  const handleSelectExtremesYear = (year: number) => {
+    if (!lastLatLng) return;
+    loadExtremes(lastLatLng.lat, lastLatLng.lng, year);
   };
 
   const handleSelectPastYear = (year: number) => {
@@ -295,10 +352,12 @@ export const Map = ({
         const isStale = () => requestIdRef.current !== requestId;
 
         setLastLatLng({ lat, lng });
+        setActiveTab("verlauf");
         setSession({
           place: { status: "loading" },
           temperature: { status: "loading" },
           history: { status: "loading" },
+          extremes: null,
         });
 
         reverseGeocode(lat, lng).then(
@@ -373,6 +432,15 @@ export const Map = ({
       clearInterval(interval);
     };
   }, [globalGrid?.status]);
+
+  // Extreme-day counts are only fetched once the Extremwetter tab is
+  // actually opened — a cold-cache baseline lookup can cost dozens of
+  // archive API calls, so it shouldn't fire on every map click.
+  useEffect(() => {
+    if (activeTab !== "extremwetter" || !lastLatLng || !session) return;
+    if (session.extremes !== null) return;
+    loadExtremes(lastLatLng.lat, lastLatLng.lng, new Date().getUTCFullYear() - 1);
+  }, [activeTab, session, lastLatLng]);
 
   // Kept separate from the fetch-triggering effect so the layer's
   // presence tracks `mode` independent of whether a fetch is in flight,
@@ -525,30 +593,93 @@ export const Map = ({
             <Skeleton width={60} height={14} />
           )}
         </p>
-        <div style={{ marginTop: 16 }}>
-          {session?.history.status === "done" ? (
-            <HistoryContent
-              history={session.history.value}
-              onSelectPastYear={handleSelectPastYear}
-              onSelectRecentYear={handleSelectRecentYear}
-            />
-          ) : session?.history.status === "error" ? (
-            <p>Verlauf nicht verfügbar</p>
-          ) : (
-            <>
-              <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-                <Skeleton width="100%" height={46} />
-                <Skeleton width="100%" height={46} />
-                <Skeleton width="100%" height={46} />
-              </div>
-              <Skeleton width="100%" height={220} />
-            </>
-          )}
+        <div style={{ display: "flex", gap: 8, marginTop: 16, marginBottom: 16 }}>
+          <TabButton
+            label="Verlauf"
+            active={activeTab === "verlauf"}
+            onClick={() => setActiveTab("verlauf")}
+          />
+          <TabButton
+            label="Extremwetter"
+            active={activeTab === "extremwetter"}
+            onClick={() => setActiveTab("extremwetter")}
+          />
         </div>
+        {activeTab === "verlauf" ? (
+          <div>
+            {session?.history.status === "done" ? (
+              <HistoryContent
+                history={session.history.value}
+                onSelectPastYear={handleSelectPastYear}
+                onSelectRecentYear={handleSelectRecentYear}
+              />
+            ) : session?.history.status === "error" ? (
+              <p>Verlauf nicht verfügbar</p>
+            ) : (
+              <>
+                <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+                  <Skeleton width="100%" height={46} />
+                  <Skeleton width="100%" height={46} />
+                  <Skeleton width="100%" height={46} />
+                </div>
+                <Skeleton width="100%" height={220} />
+              </>
+            )}
+          </div>
+        ) : (
+          <div>
+            {session?.extremes?.status === "done" ? (
+              <ExtremeWeatherPanel
+                info={session.extremes.value}
+                onSelectYear={handleSelectExtremesYear}
+              />
+            ) : session?.extremes?.status === "error" ? (
+              <p>Extremwetter-Daten nicht verfügbar</p>
+            ) : (
+              <>
+                <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+                  <Skeleton width="100%" height={46} />
+                  <Skeleton width="100%" height={46} />
+                  <Skeleton width="100%" height={46} />
+                </div>
+                <Skeleton width="100%" height={120} />
+              </>
+            )}
+          </div>
+        )}
       </Modal>
     </>
   );
 };
+
+const TabButton = ({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) => (
+  <button
+    type="button"
+    onClick={onClick}
+    aria-pressed={active}
+    style={{
+      padding: "6px 12px",
+      borderRadius: 999,
+      border: "none",
+      background: active ? "var(--accent, #0f766e)" : "rgba(255,255,255,0.04)",
+      color: active ? "#fff" : "inherit",
+      font: "inherit",
+      fontSize: 13,
+      fontWeight: active ? 600 : 400,
+      cursor: "pointer",
+    }}
+  >
+    {label}
+  </button>
+);
 
 const HistoryContent = ({
   history,
