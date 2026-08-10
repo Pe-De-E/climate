@@ -5,6 +5,8 @@ import type * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { Modal } from "./modal";
 import { TemperatureChart } from "./temperature-chart";
+import { GlobalAnomalyLegend } from "./globalAnomalyLegend";
+import { colorForDelta } from "./globalAnomalyColor";
 
 const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
 const TILE_ATTRIBUTION =
@@ -72,13 +74,88 @@ const defaultYears = () => {
   return { year1: recentYear - DEFAULT_YEARS_AGO, year2: recentYear };
 };
 
+const GLOBAL_API_URL = `${BACKEND_URL}/api/weather/global`;
+const GLOBAL_RESOLUTION = 2;
+
+interface GlobalGridCell {
+  lat: number;
+  lng: number;
+  delta: number;
+}
+
+interface GlobalGridResult {
+  cells: GlobalGridCell[];
+  unit: string;
+}
+
+const fetchGlobalGrid = async (
+  year1: number,
+  year2: number,
+  resolution: number,
+): Promise<GlobalGridResult> => {
+  const res = await fetch(
+    `${GLOBAL_API_URL}?year1=${year1}&year2=${year2}&resolution=${resolution}`,
+  );
+  if (!res.ok) throw new Error(`global API responded with ${res.status}`);
+  const data = await res.json();
+  return { cells: data.cells, unit: data.unit };
+};
+
+const GLOBAL_PROGRESS_API_URL = `${BACKEND_URL}/api/weather/global/progress`;
+const PROGRESS_POLL_INTERVAL_MS = 3000;
+
+interface GlobalGridProgress {
+  done: number;
+  total: number;
+}
+
+const fetchGlobalGridProgress = async (
+  year1: number,
+  year2: number,
+  resolution: number,
+): Promise<GlobalGridProgress> => {
+  const res = await fetch(
+    `${GLOBAL_PROGRESS_API_URL}?year1=${year1}&year2=${year2}&resolution=${resolution}`,
+  );
+  if (!res.ok) throw new Error(`progress API responded with ${res.status}`);
+  return res.json();
+};
+
+function buildGridLayer(
+  Leaflet: typeof import("leaflet"),
+  cells: GlobalGridCell[],
+  resolutionDeg: number,
+) {
+  const renderer = Leaflet.canvas({ padding: 0.5 });
+  const half = resolutionDeg / 2;
+  const layerGroup = Leaflet.layerGroup();
+  cells.forEach((cell) => {
+    Leaflet.rectangle(
+      [
+        [cell.lat - half, cell.lng - half],
+        [cell.lat + half, cell.lng + half],
+      ],
+      {
+        renderer,
+        interactive: false,
+        stroke: false,
+        fillColor: colorForDelta(cell.delta),
+        fillOpacity: 0.55,
+      },
+    ).addTo(layerGroup);
+  });
+  return layerGroup;
+}
+
 const MONTH_LABELS = Array.from({ length: 12 }, (_, i) =>
   new Intl.DateTimeFormat("de-DE", { month: "short" }).format(
     new Date(2000, i, 1),
   ),
 );
 
-export type MapMode = "local";
+export type MapMode = "local" | "global";
+
+const CLICK_DETAIL_MODES: MapMode[] = ["local", "global"];
 
 interface MapProps {
   className?: string;
@@ -125,14 +202,34 @@ export const Map = ({
 }: MapProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const leafletRef = useRef<typeof import("leaflet") | null>(null);
+  const gridLayerRef = useRef<L.LayerGroup | null>(null);
+  const [mapReady, setMapReady] = useState(false);
   const [session, setSession] = useState<LocalSession | null>(null);
   const [lastLatLng, setLastLatLng] = useState<{ lat: number; lng: number } | null>(
     null,
   );
+  const [globalGrid, setGlobalGrid] = useState<FieldState<GlobalGridResult> | null>(
+    null,
+  );
+  const [globalGridProgress, setGlobalGridProgress] =
+    useState<GlobalGridProgress | null>(null);
+  const globalGridRequestedRef = useRef(false);
   const modeRef = useRef(mode);
   modeRef.current = mode;
   const requestIdRef = useRef(0);
   const historyFetchIdRef = useRef(0);
+
+  const triggerGlobalGridFetch = () => {
+    if (globalGridRequestedRef.current) return;
+    globalGridRequestedRef.current = true;
+    setGlobalGrid({ status: "loading" });
+    const { year1, year2 } = defaultYears();
+    fetchGlobalGrid(year1, year2, GLOBAL_RESOLUTION).then(
+      (value) => setGlobalGrid({ status: "done", value }),
+      () => setGlobalGrid({ status: "error" }),
+    );
+  };
 
   const loadHistory = (lat: number, lng: number, year1: number, year2: number) => {
     const locationRequestId = requestIdRef.current;
@@ -190,7 +287,9 @@ export const Map = ({
       L.control.zoom({ position: "topright" }).addTo(map);
       L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION }).addTo(map);
       map.on("click", (e) => {
-        if (modeRef.current !== "local") return;
+        if (!modeRef.current || !CLICK_DETAIL_MODES.includes(modeRef.current)) {
+          return;
+        }
         const { lat, lng } = e.latlng;
         const requestId = ++requestIdRef.current;
         const isStale = () => requestIdRef.current !== requestId;
@@ -230,6 +329,8 @@ export const Map = ({
         loadHistory(lat, lng, year1, year2);
       });
       mapRef.current = map;
+      leafletRef.current = L;
+      setMapReady(true);
       onMapLoad?.(map);
     });
 
@@ -242,6 +343,54 @@ export const Map = ({
     // should pan/zoom the existing map instance instead of recreating it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Fires once per session, not once per mode switch — toggling Local <->
+  // Global repeatedly reuses whatever was already fetched instead of
+  // re-hitting the backend (a cold grid request can take a while).
+  useEffect(() => {
+    if (!mapReady || mode !== "global") return;
+    triggerGlobalGridFetch();
+  }, [mode, mapReady]);
+
+  // Polls a lightweight progress endpoint while the grid is loading, so a
+  // long cold-cache request shows real, moving numbers instead of a static
+  // "please wait" message that's indistinguishable from a stuck request.
+  useEffect(() => {
+    if (globalGrid?.status !== "loading") return;
+    const { year1, year2 } = defaultYears();
+    let cancelled = false;
+
+    const poll = () => {
+      fetchGlobalGridProgress(year1, year2, GLOBAL_RESOLUTION).then((value) => {
+        if (!cancelled) setGlobalGridProgress(value);
+      }, () => {});
+    };
+    poll();
+    const interval = setInterval(poll, PROGRESS_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [globalGrid?.status]);
+
+  // Kept separate from the fetch-triggering effect so the layer's
+  // presence tracks `mode` independent of whether a fetch is in flight,
+  // already done, or was already cached from an earlier mode toggle.
+  useEffect(() => {
+    const map = mapRef.current;
+    const Leaflet = leafletRef.current;
+    if (!map || !Leaflet) return;
+    if (mode === "global" && globalGrid?.status === "done") {
+      const layer = buildGridLayer(Leaflet, globalGrid.value.cells, GLOBAL_RESOLUTION);
+      layer.addTo(map);
+      gridLayerRef.current = layer;
+      return () => {
+        layer.remove();
+        gridLayerRef.current = null;
+      };
+    }
+  }, [mode, globalGrid]);
 
   return (
     <>
@@ -260,6 +409,99 @@ export const Map = ({
         className={className}
         style={{ width: "100%", height: "100%" }}
       />
+      {mode === "global" && globalGrid?.status === "loading" && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 16,
+            left: 16,
+            zIndex: 1000,
+            background: "var(--surface, #1a1d24)",
+            border: "1px solid var(--border, #2a2d36)",
+            borderRadius: 8,
+            padding: "10px 14px",
+            fontSize: 12,
+            color: "var(--foreground-muted, #9aa0ab)",
+            width: 240,
+          }}
+        >
+          <div style={{ marginBottom: 6 }}>
+            Lade globale Temperaturanomalien
+            {globalGridProgress
+              ? ` (${Math.min(100, Math.round((globalGridProgress.done / globalGridProgress.total) * 100))}%)`
+              : "…"}
+          </div>
+          <div
+            style={{
+              height: 6,
+              borderRadius: 3,
+              background: "var(--border, #2a2d36)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                height: "100%",
+                width: `${
+                  globalGridProgress
+                    ? Math.min(
+                        100,
+                        (globalGridProgress.done / globalGridProgress.total) * 100,
+                      )
+                    : 4
+                }%`,
+                background: "var(--accent-bright, #2dd4bf)",
+                transition: "width 0.6s ease",
+              }}
+            />
+          </div>
+          {globalGridProgress && (
+            <div style={{ marginTop: 6, fontSize: 11 }}>
+              {globalGridProgress.done} / {globalGridProgress.total} Punkte
+            </div>
+          )}
+        </div>
+      )}
+      {mode === "global" && globalGrid?.status === "error" && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 16,
+            left: 16,
+            zIndex: 1000,
+            background: "var(--surface, #1a1d24)",
+            border: "1px solid var(--border, #2a2d36)",
+            borderRadius: 8,
+            padding: "10px 14px",
+            fontSize: 12,
+            color: "var(--foreground-muted, #9aa0ab)",
+            maxWidth: 240,
+          }}
+        >
+          <p style={{ marginBottom: 8 }}>Laden fehlgeschlagen.</p>
+          <button
+            type="button"
+            onClick={() => {
+              globalGridRequestedRef.current = false;
+              triggerGlobalGridFetch();
+            }}
+            style={{
+              border: "none",
+              borderRadius: 6,
+              padding: "6px 10px",
+              background: "var(--accent, #0f766e)",
+              color: "#fff",
+              font: "inherit",
+              cursor: "pointer",
+            }}
+          >
+            Erneut versuchen
+          </button>
+        </div>
+      )}
+      {mode === "global" && globalGrid?.status === "done" && (
+        <GlobalAnomalyLegend unit={globalGrid.value.unit} />
+      )}
       <Modal
         open={!!session}
         onClose={() => setSession(null)}

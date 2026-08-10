@@ -24,6 +24,19 @@ export default function Home() {
             <span className={styles.modeButtonBadge}>AKTIV</span>
           )}
         </button>
+        <button
+          type="button"
+          onClick={() => setMode("global")}
+          aria-pressed={mode === "global"}
+          className={`${styles.modeButton} ${
+            mode === "global" ? styles.modeButtonActive : ""
+          }`}
+        >
+          Global Mode
+          {mode === "global" && (
+            <span className={styles.modeButtonBadge}>AKTIV</span>
+          )}
+        </button>
       </Sidebar>
       <Map mode={mode} />
     </div>
