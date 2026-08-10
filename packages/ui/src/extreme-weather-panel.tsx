@@ -79,7 +79,9 @@ export const ExtremeWeatherPanel = ({
   onSelectYear,
 }: ExtremeWeatherPanelProps) => {
   const [pickerOpen, setPickerOpen] = useState(false);
-  const maxSelectableYear = new Date().getUTCFullYear() - 1;
+  const currentYear = new Date().getUTCFullYear();
+  const maxSelectableYear = currentYear - 1;
+  const isCurrentYear = info.year === currentYear;
 
   return (
     <div>
@@ -89,31 +91,54 @@ export const ExtremeWeatherPanel = ({
           alignItems: "center",
           justifyContent: "space-between",
           marginBottom: 16,
+          flexWrap: "wrap",
+          gap: 8,
         }}
       >
         <span style={{ fontSize: 13, color: "var(--foreground-muted, #9aa0ab)" }}>
           Vergleich ggü. Klimanormalperiode {info.baselinePeriod}
         </span>
-        <button
-          type="button"
-          onClick={() => setPickerOpen(true)}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "4px 10px 4px 8px",
-            borderRadius: 999,
-            background: "rgba(255,255,255,0.04)",
-            border: "none",
-            color: "inherit",
-            font: "inherit",
-            fontSize: 13,
-            cursor: "pointer",
-          }}
-        >
-          {info.year}
-          <span style={{ fontSize: 10, opacity: 0.6 }}>▾</span>
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          {!isCurrentYear && (
+            <button
+              type="button"
+              onClick={() => onSelectYear(currentYear)}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 999,
+                background: "rgba(255,255,255,0.04)",
+                border: "none",
+                color: "inherit",
+                font: "inherit",
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+            >
+              Dieses Jahr (bis heute)
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setPickerOpen(true)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "4px 10px 4px 8px",
+              borderRadius: 999,
+              background: "rgba(255,255,255,0.04)",
+              border: "none",
+              color: "inherit",
+              font: "inherit",
+              fontSize: 13,
+              cursor: "pointer",
+            }}
+          >
+            {info.year}
+            {isCurrentYear ? " (bis heute)" : ""}
+            <span style={{ fontSize: 10, opacity: 0.6 }}>▾</span>
+          </button>
+        </div>
       </div>
 
       <YearPickerModal
@@ -152,7 +177,11 @@ export const ExtremeWeatherPanel = ({
                 </span>
               </div>
               <div style={{ display: "flex", gap: 12 }}>
-                <StatTile label={String(info.year)} value={count} unit=" Tage" />
+                <StatTile
+                  label={isCurrentYear ? `${info.year} bis heute` : String(info.year)}
+                  value={count}
+                  unit=" Tage"
+                />
                 <StatTile
                   label={`Ø ${info.baselinePeriod}`}
                   value={baselineCount}

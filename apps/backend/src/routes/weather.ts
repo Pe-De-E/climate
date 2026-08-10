@@ -55,12 +55,13 @@ function parseYearPair(
 
 function parseSingleYear(
   req: Request,
-  lastFullYear: number,
+  defaultYear: number,
+  maxYear: number,
 ): { year: number } | { error: string } {
-  const year = Number(req.query.year ?? lastFullYear);
-  if (!Number.isInteger(year) || year < ARCHIVE_START_YEAR || year > lastFullYear) {
+  const year = Number(req.query.year ?? defaultYear);
+  if (!Number.isInteger(year) || year < ARCHIVE_START_YEAR || year > maxYear) {
     return {
-      error: `year must be an integer between ${ARCHIVE_START_YEAR} and ${lastFullYear}`,
+      error: `year must be an integer between ${ARCHIVE_START_YEAR} and ${maxYear}`,
     };
   }
   return { year };
@@ -234,8 +235,12 @@ weatherRouter.get("/extremes", async (req, res) => {
     return;
   }
 
-  const lastFullYear = new Date().getUTCFullYear() - 1;
-  const parsedYear = parseSingleYear(req, lastFullYear);
+  const currentYear = new Date().getUTCFullYear();
+  // Unlike /history and /global (which compare two complete years), the
+  // current in-progress year is a valid, deliberately allowed choice here —
+  // "this year so far" is exactly what the year-picker's shortcut button
+  // requests.
+  const parsedYear = parseSingleYear(req, currentYear - 1, currentYear);
   if ("error" in parsedYear) {
     res.status(400).json({ error: parsedYear.error });
     return;

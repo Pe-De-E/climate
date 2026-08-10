@@ -78,15 +78,28 @@ export async function fetchDailyMeans(
   };
 }
 
+// The archive API's underlying ERA5 reanalysis lags a few days behind
+// real-time — requesting an end_date past what's actually processed yet
+// gets rejected with a 400, not just nulls for the missing days.
+const ARCHIVE_PROCESSING_LAG_DAYS = 5;
+
 export async function fetchDailyExtremeVariables(
   latGrid: number,
   lngGrid: number,
   year: number,
 ): Promise<DailyExtremeVariables> {
+  const today = new Date();
+  let endDate = `${year}-12-31`;
+  if (year === today.getUTCFullYear()) {
+    const cutoff = new Date(today);
+    cutoff.setUTCDate(cutoff.getUTCDate() - ARCHIVE_PROCESSING_LAG_DAYS);
+    endDate = cutoff.toISOString().slice(0, 10);
+  }
+
   const url =
     `https://archive-api.open-meteo.com/v1/archive` +
     `?latitude=${latGrid}&longitude=${lngGrid}` +
-    `&start_date=${year}-01-01&end_date=${year}-12-31` +
+    `&start_date=${year}-01-01&end_date=${endDate}` +
     `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,wind_gusts_10m_max&timezone=UTC`;
 
   const data = await fetchArchiveJson(url);

@@ -17,28 +17,37 @@ export async function getOrFetchExtremeDayCounts(
   lngGrid: number,
   year: number,
 ): Promise<ExtremeDayCountsResult> {
-  const cached = await ExtremeDayCounts.findOne({ latGrid, lngGrid, year });
-  if (cached) {
-    return {
-      hotDays: cached.hotDays,
-      frostDays: cached.frostDays,
-      heavyRainDays: cached.heavyRainDays,
-      stormDays: cached.stormDays,
-      daysWithData: cached.daysWithData,
-    };
+  // The current calendar year is still in progress — its count grows every
+  // day, so it must never be written to (or served from) the permanent
+  // cache. Every other year is finished and safe to cache forever.
+  const isInProgressYear = year === new Date().getUTCFullYear();
+
+  if (!isInProgressYear) {
+    const cached = await ExtremeDayCounts.findOne({ latGrid, lngGrid, year });
+    if (cached) {
+      return {
+        hotDays: cached.hotDays,
+        frostDays: cached.frostDays,
+        heavyRainDays: cached.heavyRainDays,
+        stormDays: cached.stormDays,
+        daysWithData: cached.daysWithData,
+      };
+    }
   }
 
   const variables = await fetchDailyExtremeVariables(latGrid, lngGrid, year);
   const counts = countExtremeDays(variables);
 
-  // upsert instead of create: two concurrent first-time requests for the
-  // same brand-new grid cell/year would otherwise both try to insert and
-  // collide on the unique index.
-  await ExtremeDayCounts.findOneAndUpdate(
-    { latGrid, lngGrid, year },
-    { $setOnInsert: { ...counts, source: "open-meteo-archive" } },
-    { upsert: true, new: true },
-  );
+  if (!isInProgressYear) {
+    // upsert instead of create: two concurrent first-time requests for the
+    // same brand-new grid cell/year would otherwise both try to insert and
+    // collide on the unique index.
+    await ExtremeDayCounts.findOneAndUpdate(
+      { latGrid, lngGrid, year },
+      { $setOnInsert: { ...counts, source: "open-meteo-archive" } },
+      { upsert: true, new: true },
+    );
+  }
 
   return counts;
 }
