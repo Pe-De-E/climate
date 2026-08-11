@@ -1,159 +1,94 @@
-# Turborepo starter
+# Weather Anomalie
 
-This Turborepo starter is maintained by the Turborepo core team.
+Eine Webanwendung, die aktuelles und historisches Wetter mit der Klimanormalperiode 1961–1990 vergleicht — für einen einzelnen Ort oder global auf der Weltkarte. Entstanden als Abschlussprojekt im Full-Stack-Bootcamp der WBS Coding School.
 
-## Using this example
+## Motivation
 
-Run the following command:
+Statt bei "früher war's doch auch schon mal heiß" auf Anekdoten angewiesen zu sein, liefert die App echte Zahlen: Wie viele Hitze-, Frost-, Starkregen- und Sturmtage gab es in einem Jahr im Vergleich zum langjährigen Mittel, und wie hat sich das über die letzten Jahrzehnte entwickelt?
 
-```sh
-npx create-turbo@latest
+## Features
+
+### Local Mode
+
+Klick auf einen Ort auf der Karte öffnet drei Tabs:
+
+- **Verlauf** — monatliche Durchschnittstemperaturen für zwei frei wählbare Jahre im Vergleich, als Diagramm und Tabelle
+- **Extremwetter** — Anzahl der Hitze-/Frost-/Starkregen-/Sturmtage für ein wählbares Jahr, verglichen mit dem Schnitt der Klimanormalperiode 1961–1990, inklusive:
+  - Tages-Kalender im GitHub-Contribution-Stil (zeigt, an welchen Tagen z.B. ein Hitzetag war)
+  - längste zusammenhängende Serie (z.B. längste Hitzewelle)
+- **Langzeitverlauf** — ein Kästchen pro Jahr (1940 bis heute), gruppiert nach Jahrzehnt und eingefärbt nach Anzahl der Extremtage, zeigt den Trend auf einen Blick
+
+### Global Mode
+
+Weltkarte mit Temperaturanomalien pro Rasterzelle zwischen zwei wählbaren Jahren.
+
+## Tech-Stack
+
+- **Frontend:** Next.js (App Router), React, Leaflet (Karte), TypeScript
+- **Backend:** Express, TypeScript
+- **Datenbank:** MongoDB (Mongoose) — cached historische Wetterdaten, damit nicht bei jeder Anfrage erneut bei Open-Meteo abgefragt werden muss
+- **Wetterdaten:** [Open-Meteo Archive API](https://open-meteo.com/)
+- **Monorepo:** Turborepo + pnpm Workspaces
+
+## Projektstruktur
+
+```text
+apps/
+  backend/    Express-API, Mongoose-Modelle, Open-Meteo-Anbindung
+  frontend/   Next.js-App
+packages/
+  ui/         Geteilte React-Komponenten (Karte, Panels, Diagramme, ...)
 ```
 
-## What's inside?
+## Setup
 
-This Turborepo includes the following packages/apps:
+Voraussetzungen: Node.js ≥ 18, pnpm, eine MongoDB-Instanz (z.B. [MongoDB Atlas](https://www.mongodb.com/atlas))
 
-### Apps and Packages
-
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
-
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
-
-### Utilities
-
-This Turborepo has some additional tools already setup for you:
-
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
-
-### Build
-
-To build all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo build
+```bash
+pnpm install
 ```
 
-Without global `turbo`, use your package manager:
+Backend-Env anlegen (`apps/backend/.env`, Vorlage: `apps/backend/.env.example`):
 
-```sh
-cd my-turborepo
-npx turbo build
-pnpm dlx turbo build
-pnpm exec turbo build
+```env
+MONGODB_URI=mongodb+srv://<user>:<password>@<cluster-host>/<db-name>?retryWrites=true&w=majority
+PORT=3001
 ```
 
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+Frontend-Env anlegen (`apps/frontend/.env.local`, Vorlage: `apps/frontend/.env.example`):
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo build --filter=docs
+```env
+NEXT_PUBLIC_BACKEND_URL=http://localhost:3001
 ```
 
-Without global `turbo`:
+Dev-Server starten (Frontend auf Port 3000, Backend auf Port 3001):
 
-```sh
-npx turbo build --filter=docs
-pnpm exec turbo build --filter=docs
-pnpm exec turbo build --filter=docs
+```bash
+pnpm dev
 ```
 
-### Develop
+## Scripts
 
-To develop all apps and packages, run the following command:
+| Befehl | Beschreibung |
+| --- | --- |
+| `pnpm dev` | Startet Backend + Frontend im Watch-Modus |
+| `pnpm build` | Production-Build beider Apps |
+| `pnpm lint` | ESLint über das gesamte Repo |
+| `pnpm check-types` | TypeScript-Check über das gesamte Repo |
+| `pnpm --filter backend warm-global-grid` | Wärmt den Cache für den Global-Mode-Raster vor (optional, spart Ladezeit beim ersten Aufruf) |
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
+## API-Endpunkte (Backend)
 
-```sh
-cd my-turborepo
-turbo dev
-```
+Alle Routen unter `/api/weather`:
 
-Without global `turbo`, use your package manager:
+| Endpoint | Beschreibung |
+| --- | --- |
+| `GET /current` | Aktuelle Temperatur für einen Ort |
+| `GET /history` | Monatsmittel für zwei Jahre im Vergleich |
+| `GET /global` | Temperaturanomalie-Raster für die Weltkarte |
+| `GET /global/progress` | Ladefortschritt für `/global` |
+| `GET /extremes` | Extremtage-Zählung für ein Jahr vs. Klimanormalperiode |
+| `GET /extremes/daily` | Tägliche Extremtage-Flags für ein Jahr (Kalenderansicht) |
+| `GET /extremes/history` | Extremtage-Zählung für jedes Jahr seit 1940 (Langzeitverlauf) |
 
-```sh
-cd my-turborepo
-npx turbo dev
-pnpm exec turbo dev
-pnpm exec turbo dev
-```
-
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo dev --filter=web
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-```
-
-### Remote Caching
-
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
-
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
-
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo login
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo login
-pnpm exec turbo login
-pnpm exec turbo login
-```
-
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
-
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo link
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo link
-pnpm exec turbo link
-pnpm exec turbo link
-```
-
-## Useful Links
-
-Learn more about the power of Turborepo:
-
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)
+Wetterdaten stammen von [Open-Meteo](https://open-meteo.com/), Reverse-Geocoding von [Nominatim/OpenStreetMap](https://nominatim.org/), Kartenkacheln von [CARTO](https://carto.com/).
