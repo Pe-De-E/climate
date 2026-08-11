@@ -20,7 +20,7 @@ function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;
 }
 
-function lerpColor(fromHex: string, toHex: string, t: number) {
+export function lerpColor(fromHex: string, toHex: string, t: number) {
   const from = hexToRgb(fromHex);
   const to = hexToRgb(toHex);
   const r = Math.round(lerp(from.r, to.r, t));
@@ -36,4 +36,21 @@ export function colorForDelta(delta: number) {
   const t = Math.abs(clamped) / DOMAIN_C;
   const pole = clamped < 0 ? COLD_COLOR : WARM_COLOR;
   return lerpColor(NEUTRAL_COLOR, pole, t);
+}
+
+/** count (e.g. extreme days in a year) -> a color continuously interpolated
+ * from neutral at `minCount` up to full-intensity `color` at `maxCount`.
+ * Scaled to the dataset's own min..max (not 0..max) — a count like frost
+ * days rarely gets close to 0, so anchoring at 0 would squeeze every year
+ * into the same high-intensity end of the scale and make them
+ * indistinguishable from each other. */
+export function colorForCount(
+  count: number,
+  minCount: number,
+  maxCount: number,
+  color: string,
+) {
+  if (maxCount <= minCount) return color;
+  const t = Math.max(0, Math.min(1, (count - minCount) / (maxCount - minCount)));
+  return lerpColor(NEUTRAL_COLOR, color, t);
 }

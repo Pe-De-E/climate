@@ -3,29 +3,13 @@
 import { useState } from "react";
 import { StatTile } from "./stat-tile";
 import { YearPickerModal } from "./year-picker-modal";
-import { COLD_COLOR, WARM_COLOR } from "./globalAnomalyColor";
+import {
+  EXTREME_CATEGORIES,
+  type ExtremeDayCounts,
+  type ExtremeThresholds,
+} from "./extremeCategories";
 
-// Slots 3 (aqua) & 7 (violet) from the validated dataviz palette, chosen for
-// Starkregen/Sturm alongside the already-used slot 1 (blue, Frost) and
-// slot 8 (red, Hitze) — checked as a 4-color set with
-// scripts/validate_palette.js against this app's dark surface (#1a1d24):
-// worst adjacent CVD ΔE 17.3, normal-vision ΔE 20.9, all pass.
-const HEAVY_RAIN_COLOR = "#199e70";
-const STORM_COLOR = "#9085e9";
-
-export interface ExtremeDayCounts {
-  hotDays: number;
-  frostDays: number;
-  heavyRainDays: number;
-  stormDays: number;
-}
-
-export interface ExtremeThresholds {
-  hotDayMaxC: number;
-  frostDayMinC: number;
-  heavyRainMm: number;
-  stormGustKmh: number;
-}
+export type { ExtremeDayCounts, ExtremeThresholds };
 
 export interface ExtremesInfo {
   year: number;
@@ -34,40 +18,6 @@ export interface ExtremesInfo {
   baselineCounts: ExtremeDayCounts;
   thresholds: ExtremeThresholds;
 }
-
-interface Category {
-  key: keyof ExtremeDayCounts;
-  label: string;
-  thresholdLabel: (t: ExtremeThresholds) => string;
-  color: string;
-}
-
-const CATEGORIES: Category[] = [
-  {
-    key: "hotDays",
-    label: "Hitzetage",
-    thresholdLabel: (t) => `Tmax ≥ ${t.hotDayMaxC}°C`,
-    color: WARM_COLOR,
-  },
-  {
-    key: "frostDays",
-    label: "Frosttage",
-    thresholdLabel: (t) => `Tmin < ${t.frostDayMinC}°C`,
-    color: COLD_COLOR,
-  },
-  {
-    key: "heavyRainDays",
-    label: "Starkregentage",
-    thresholdLabel: (t) => `Niederschlag ≥ ${t.heavyRainMm}mm`,
-    color: HEAVY_RAIN_COLOR,
-  },
-  {
-    key: "stormDays",
-    label: "Sturmtage",
-    thresholdLabel: (t) => `Böen ≥ ${t.stormGustKmh}km/h`,
-    color: STORM_COLOR,
-  },
-];
 
 interface ExtremeWeatherPanelProps {
   info: ExtremesInfo;
@@ -155,7 +105,7 @@ export const ExtremeWeatherPanel = ({
       />
 
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-        {CATEGORIES.map((category) => {
+        {EXTREME_CATEGORIES.map((category) => {
           const count = info.counts[category.key];
           const baselineCount = info.baselineCounts[category.key];
           const delta = Math.round((count - baselineCount) * 10) / 10;

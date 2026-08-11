@@ -8,6 +8,14 @@ import { TemperatureChart } from "./temperature-chart";
 import { GlobalAnomalyLegend } from "./globalAnomalyLegend";
 import { colorForDelta } from "./globalAnomalyColor";
 import { ExtremeWeatherPanel, type ExtremesInfo } from "./extreme-weather-panel";
+import { ExtremeDayCalendar } from "./extreme-day-calendar";
+import { ExtremeHistoryPanel, type ExtremeYearCount } from "./extreme-history-panel";
+import { CategoryToggle } from "./category-toggle";
+import type {
+  DailyExtremeFlags,
+  ExtremeThresholds,
+  ExtremeDayCounts,
+} from "./extremeCategories";
 
 const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
 const TILE_ATTRIBUTION =
@@ -22,6 +30,12 @@ const reverseGeocode = async (lat: number, lng: number) => {
 
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
+
+// Thrown by the archive-backed fetch helpers (history/extremes/global) when
+// the backend reports its own upstream (Open-Meteo) rate limit via HTTP
+// 429, so callers can show "rate limited, try again shortly" instead of a
+// generic failure message.
+class RateLimitedError extends Error {}
 
 const WEATHER_API_URL = `${BACKEND_URL}/api/weather/current`;
 
@@ -51,6 +65,7 @@ const fetchHistory = async (
   const res = await fetch(
     `${HISTORY_API_URL}?lat=${lat}&lng=${lng}&year1=${year1}&year2=${year2}`,
   );
+  if (res.status === 429) throw new RateLimitedError();
   if (!res.ok) throw new Error(`history API responded with ${res.status}`);
   const data = await res.json();
   const years = data.years as {
@@ -78,6 +93,7 @@ const fetchExtremeDays = async (
   const res = await fetch(
     `${EXTREMES_API_URL}?lat=${lat}&lng=${lng}&year=${year}`,
   );
+  if (res.status === 429) throw new RateLimitedError();
   if (!res.ok) throw new Error(`extremes API responded with ${res.status}`);
   const data = await res.json();
   return {
@@ -87,6 +103,45 @@ const fetchExtremeDays = async (
     baselineCounts: data.baseline.counts,
     thresholds: data.thresholds,
   };
+};
+
+interface DailyCalendarInfo {
+  year: number;
+  days: DailyExtremeFlags[];
+}
+
+const EXTREMES_DAILY_API_URL = `${BACKEND_URL}/api/weather/extremes/daily`;
+
+const fetchDailyExtremes = async (
+  lat: number,
+  lng: number,
+  year: number,
+): Promise<DailyCalendarInfo> => {
+  const res = await fetch(
+    `${EXTREMES_DAILY_API_URL}?lat=${lat}&lng=${lng}&year=${year}`,
+  );
+  if (res.status === 429) throw new RateLimitedError();
+  if (!res.ok) throw new Error(`daily extremes API responded with ${res.status}`);
+  const data = await res.json();
+  return { year: data.year, days: data.days };
+};
+
+interface ExtremesHistoryInfo {
+  years: ExtremeYearCount[];
+  thresholds: ExtremeThresholds;
+}
+
+const EXTREMES_HISTORY_API_URL = `${BACKEND_URL}/api/weather/extremes/history`;
+
+const fetchExtremesHistory = async (
+  lat: number,
+  lng: number,
+): Promise<ExtremesHistoryInfo> => {
+  const res = await fetch(`${EXTREMES_HISTORY_API_URL}?lat=${lat}&lng=${lng}`);
+  if (res.status === 429) throw new RateLimitedError();
+  if (!res.ok) throw new Error(`extremes history API responded with ${res.status}`);
+  const data = await res.json();
+  return { years: data.years, thresholds: data.thresholds };
 };
 
 const DEFAULT_YEARS_AGO = 40;
@@ -118,6 +173,7 @@ const fetchGlobalGrid = async (
   const res = await fetch(
     `${GLOBAL_API_URL}?year1=${year1}&year2=${year2}&resolution=${resolution}`,
   );
+  if (res.status === 429) throw new RateLimitedError();
   if (!res.ok) throw new Error(`global API responded with ${res.status}`);
   const data = await res.json();
   return { cells: data.cells, unit: data.unit };
@@ -191,9 +247,11 @@ interface MapProps {
 type FieldState<T> =
   | { status: "loading" }
   | { status: "done"; value: T }
-  | { status: "error" };
+  | { status: "error" }
+  | { status: "rate-limited" };
 
-type LocalTab = "verlauf" | "extremwetter";
+type LocalTab = "verlauf" | "extremwetter" | "langzeit";
+type ExtremeCategoryKey = keyof ExtremeDayCounts;
 
 interface LocalSession {
   place: FieldState<string>;
@@ -203,6 +261,12 @@ interface LocalSession {
   // baseline fetch behind it can cost dozens of archive API calls on a cold
   // cache, so it's only triggered on demand, not on every map click.
   extremes: FieldState<ExtremesInfo> | null;
+  // Same lazy-load reasoning as extremes; fetched alongside it once the
+  // Extremwetter tab opens.
+  dailyCalendar: FieldState<DailyCalendarInfo> | null;
+  // null until the Langzeitverlauf tab is opened — a cold-cache fetch here
+  // covers every year back to 1940, so it's strictly on-demand.
+  extremesHistory: FieldState<ExtremesHistoryInfo> | null;
 }
 
 const Skeleton = ({ width, height }: { width: number | string; height: number }) => (
@@ -248,7 +312,18 @@ export const Map = ({
   const requestIdRef = useRef(0);
   const historyFetchIdRef = useRef(0);
   const extremesFetchIdRef = useRef(0);
+  const dailyCalendarFetchIdRef = useRef(0);
+  const extremesHistoryFetchIdRef = useRef(0);
+  // Remembered purely so a failed fetch can be retried with the same
+  // year(s) — the FieldState itself only holds a value on success, so on
+  // "error" the years that were actually requested would otherwise be lost.
+  const lastHistoryYearsRef = useRef<{ year1: number; year2: number } | null>(
+    null,
+  );
+  const lastExtremesYearRef = useRef<number | null>(null);
   const [activeTab, setActiveTab] = useState<LocalTab>("verlauf");
+  const [extremeCategory, setExtremeCategory] =
+    useState<ExtremeCategoryKey>("hotDays");
 
   const triggerGlobalGridFetch = () => {
     if (globalGridRequestedRef.current) return;
@@ -257,7 +332,10 @@ export const Map = ({
     const { year1, year2 } = defaultYears();
     fetchGlobalGrid(year1, year2, GLOBAL_RESOLUTION).then(
       (value) => setGlobalGrid({ status: "done", value }),
-      () => setGlobalGrid({ status: "error" }),
+      (error) =>
+        setGlobalGrid({
+          status: error instanceof RateLimitedError ? "rate-limited" : "error",
+        }),
     );
   };
 
@@ -268,6 +346,7 @@ export const Map = ({
       requestIdRef.current !== locationRequestId ||
       historyFetchIdRef.current !== fetchId;
 
+    lastHistoryYearsRef.current = { year1, year2 };
     setSession((s) => s && { ...s, history: { status: "loading" } });
 
     fetchHistory(lat, lng, year1, year2).then(
@@ -277,6 +356,10 @@ export const Map = ({
       },
       (error) => {
         if (isStale()) return;
+        if (error instanceof RateLimitedError) {
+          setSession((s) => s && { ...s, history: { status: "rate-limited" } });
+          return;
+        }
         console.error("history fetch failed:", error);
         setSession((s) => s && { ...s, history: { status: "error" } });
       },
@@ -290,6 +373,7 @@ export const Map = ({
       requestIdRef.current !== locationRequestId ||
       extremesFetchIdRef.current !== fetchId;
 
+    lastExtremesYearRef.current = year;
     setSession((s) => s && { ...s, extremes: { status: "loading" } });
 
     fetchExtremeDays(lat, lng, year).then(
@@ -299,8 +383,66 @@ export const Map = ({
       },
       (error) => {
         if (isStale()) return;
+        if (error instanceof RateLimitedError) {
+          setSession((s) => s && { ...s, extremes: { status: "rate-limited" } });
+          return;
+        }
         console.error("extremes fetch failed:", error);
         setSession((s) => s && { ...s, extremes: { status: "error" } });
+      },
+    );
+  };
+
+  const loadDailyCalendar = (lat: number, lng: number, year: number) => {
+    const locationRequestId = requestIdRef.current;
+    const fetchId = ++dailyCalendarFetchIdRef.current;
+    const isStale = () =>
+      requestIdRef.current !== locationRequestId ||
+      dailyCalendarFetchIdRef.current !== fetchId;
+
+    setSession((s) => s && { ...s, dailyCalendar: { status: "loading" } });
+
+    fetchDailyExtremes(lat, lng, year).then(
+      (value) => {
+        if (isStale()) return;
+        setSession((s) => s && { ...s, dailyCalendar: { status: "done", value } });
+      },
+      (error) => {
+        if (isStale()) return;
+        if (error instanceof RateLimitedError) {
+          setSession((s) => s && { ...s, dailyCalendar: { status: "rate-limited" } });
+          return;
+        }
+        console.error("daily calendar fetch failed:", error);
+        setSession((s) => s && { ...s, dailyCalendar: { status: "error" } });
+      },
+    );
+  };
+
+  const loadExtremesHistory = (lat: number, lng: number) => {
+    const locationRequestId = requestIdRef.current;
+    const fetchId = ++extremesHistoryFetchIdRef.current;
+    const isStale = () =>
+      requestIdRef.current !== locationRequestId ||
+      extremesHistoryFetchIdRef.current !== fetchId;
+
+    setSession((s) => s && { ...s, extremesHistory: { status: "loading" } });
+
+    fetchExtremesHistory(lat, lng).then(
+      (value) => {
+        if (isStale()) return;
+        setSession((s) => s && { ...s, extremesHistory: { status: "done", value } });
+      },
+      (error) => {
+        if (isStale()) return;
+        if (error instanceof RateLimitedError) {
+          setSession(
+            (s) => s && { ...s, extremesHistory: { status: "rate-limited" } },
+          );
+          return;
+        }
+        console.error("extremes history fetch failed:", error);
+        setSession((s) => s && { ...s, extremesHistory: { status: "error" } });
       },
     );
   };
@@ -328,6 +470,27 @@ export const Map = ({
       session.history.value.pastYear,
       year,
     );
+  };
+
+  const handleRetryHistory = () => {
+    if (!lastLatLng || !lastHistoryYearsRef.current) return;
+    const { year1, year2 } = lastHistoryYearsRef.current;
+    loadHistory(lastLatLng.lat, lastLatLng.lng, year1, year2);
+  };
+
+  const handleRetryExtremes = () => {
+    if (!lastLatLng || lastExtremesYearRef.current === null) return;
+    loadExtremes(lastLatLng.lat, lastLatLng.lng, lastExtremesYearRef.current);
+  };
+
+  const handleRetryDailyCalendar = () => {
+    if (!lastLatLng) return;
+    loadDailyCalendar(lastLatLng.lat, lastLatLng.lng, new Date().getUTCFullYear());
+  };
+
+  const handleRetryExtremesHistory = () => {
+    if (!lastLatLng) return;
+    loadExtremesHistory(lastLatLng.lat, lastLatLng.lng);
   };
 
   useEffect(() => {
@@ -358,6 +521,8 @@ export const Map = ({
           temperature: { status: "loading" },
           history: { status: "loading" },
           extremes: null,
+          dailyCalendar: null,
+          extremesHistory: null,
         });
 
         reverseGeocode(lat, lng).then(
@@ -440,6 +605,23 @@ export const Map = ({
     if (activeTab !== "extremwetter" || !lastLatLng || !session) return;
     if (session.extremes !== null) return;
     loadExtremes(lastLatLng.lat, lastLatLng.lng, new Date().getUTCFullYear() - 1);
+  }, [activeTab, session, lastLatLng]);
+
+  // The current-year calendar is fetched alongside the extreme-day counts,
+  // same on-demand reasoning.
+  useEffect(() => {
+    if (activeTab !== "extremwetter" || !lastLatLng || !session) return;
+    if (session.dailyCalendar !== null) return;
+    loadDailyCalendar(lastLatLng.lat, lastLatLng.lng, new Date().getUTCFullYear());
+  }, [activeTab, session, lastLatLng]);
+
+  // The Langzeitverlauf tab covers every year back to 1940 — even more
+  // archive calls than the Extremwetter baseline, so it's only fetched once
+  // that tab is actually opened.
+  useEffect(() => {
+    if (activeTab !== "langzeit" || !lastLatLng || !session) return;
+    if (session.extremesHistory !== null) return;
+    loadExtremesHistory(lastLatLng.lat, lastLatLng.lng);
   }, [activeTab, session, lastLatLng]);
 
   // Kept separate from the fetch-triggering effect so the layer's
@@ -530,7 +712,9 @@ export const Map = ({
           )}
         </div>
       )}
-      {mode === "global" && globalGrid?.status === "error" && (
+      {mode === "global" &&
+        (globalGrid?.status === "error" ||
+          globalGrid?.status === "rate-limited") && (
         <div
           style={{
             position: "fixed",
@@ -546,7 +730,11 @@ export const Map = ({
             maxWidth: 240,
           }}
         >
-          <p style={{ marginBottom: 8 }}>Laden fehlgeschlagen.</p>
+          <p style={{ marginBottom: 8 }}>
+            {globalGrid.status === "rate-limited"
+              ? "Open-Meteo Rate-Limit erreicht — bitte kurz warten."
+              : "Laden fehlgeschlagen."}
+          </p>
           <button
             type="button"
             onClick={() => {
@@ -604,6 +792,11 @@ export const Map = ({
             active={activeTab === "extremwetter"}
             onClick={() => setActiveTab("extremwetter")}
           />
+          <TabButton
+            label="Langzeitverlauf"
+            active={activeTab === "langzeit"}
+            onClick={() => setActiveTab("langzeit")}
+          />
         </div>
         {activeTab === "verlauf" ? (
           <div>
@@ -614,7 +807,12 @@ export const Map = ({
                 onSelectRecentYear={handleSelectRecentYear}
               />
             ) : session?.history.status === "error" ? (
-              <p>Verlauf nicht verfügbar</p>
+              <RetryNotice message="Verlauf nicht verfügbar." onRetry={handleRetryHistory} />
+            ) : session?.history.status === "rate-limited" ? (
+              <RetryNotice
+                message="Open-Meteo Rate-Limit erreicht — bitte kurz warten."
+                onRetry={handleRetryHistory}
+              />
             ) : (
               <>
                 <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
@@ -626,7 +824,7 @@ export const Map = ({
               </>
             )}
           </div>
-        ) : (
+        ) : activeTab === "extremwetter" ? (
           <div>
             {session?.extremes?.status === "done" ? (
               <ExtremeWeatherPanel
@@ -634,7 +832,15 @@ export const Map = ({
                 onSelectYear={handleSelectExtremesYear}
               />
             ) : session?.extremes?.status === "error" ? (
-              <p>Extremwetter-Daten nicht verfügbar</p>
+              <RetryNotice
+                message="Extremwetter-Daten nicht verfügbar."
+                onRetry={handleRetryExtremes}
+              />
+            ) : session?.extremes?.status === "rate-limited" ? (
+              <RetryNotice
+                message="Open-Meteo Rate-Limit erreicht — bitte kurz warten."
+                onRetry={handleRetryExtremes}
+              />
             ) : (
               <>
                 <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
@@ -644,6 +850,55 @@ export const Map = ({
                 </div>
                 <Skeleton width="100%" height={120} />
               </>
+            )}
+            <div style={{ marginTop: 24 }}>
+              <div style={{ marginBottom: 12 }}>
+                <CategoryToggle active={extremeCategory} onChange={setExtremeCategory} />
+              </div>
+              {session?.dailyCalendar?.status === "done" ? (
+                <ExtremeDayCalendar
+                  year={session.dailyCalendar.value.year}
+                  days={session.dailyCalendar.value.days}
+                  category={extremeCategory}
+                />
+              ) : session?.dailyCalendar?.status === "error" ? (
+                <RetryNotice
+                  message="Kalender nicht verfügbar."
+                  onRetry={handleRetryDailyCalendar}
+                />
+              ) : session?.dailyCalendar?.status === "rate-limited" ? (
+                <RetryNotice
+                  message="Open-Meteo Rate-Limit erreicht — bitte kurz warten."
+                  onRetry={handleRetryDailyCalendar}
+                />
+              ) : (
+                <Skeleton width="100%" height={100} />
+              )}
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div style={{ marginBottom: 12 }}>
+              <CategoryToggle active={extremeCategory} onChange={setExtremeCategory} />
+            </div>
+            {session?.extremesHistory?.status === "done" ? (
+              <ExtremeHistoryPanel
+                years={session.extremesHistory.value.years}
+                category={extremeCategory}
+                thresholds={session.extremesHistory.value.thresholds}
+              />
+            ) : session?.extremesHistory?.status === "error" ? (
+              <RetryNotice
+                message="Langzeitverlauf nicht verfügbar."
+                onRetry={handleRetryExtremesHistory}
+              />
+            ) : session?.extremesHistory?.status === "rate-limited" ? (
+              <RetryNotice
+                message="Open-Meteo Rate-Limit erreicht — bitte kurz warten."
+                onRetry={handleRetryExtremesHistory}
+              />
+            ) : (
+              <Skeleton width="100%" height={220} />
             )}
           </div>
         )}
@@ -679,6 +934,33 @@ const TabButton = ({
   >
     {label}
   </button>
+);
+
+const RetryNotice = ({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) => (
+  <div>
+    <p style={{ marginBottom: 8 }}>{message}</p>
+    <button
+      type="button"
+      onClick={onRetry}
+      style={{
+        border: "none",
+        borderRadius: 6,
+        padding: "6px 10px",
+        background: "var(--accent, #0f766e)",
+        color: "#fff",
+        font: "inherit",
+        cursor: "pointer",
+      }}
+    >
+      Erneut versuchen
+    </button>
+  </div>
 );
 
 const HistoryContent = ({

@@ -5,6 +5,8 @@ import { MonthlyClimate } from "../models/MonthlyClimate.js";
 import {
   getOrFetchExtremeDayCounts,
   getBaselineAverage,
+  getDailyExtremeFlags,
+  getExtremeDayCountsRange,
 } from "../services/extremeDaysCache.js";
 import {
   HOT_DAY_MAX_C,
@@ -14,6 +16,15 @@ import {
   BASELINE_START_YEAR,
   BASELINE_END_YEAR,
 } from "../services/extremeThresholds.js";
+import { ArchiveRateLimitError } from "../services/openMeteoArchive.js";
+import type { Response } from "express";
+
+const RATE_LIMIT_MESSAGE =
+  "Open-Meteo Rate-Limit erreicht — bitte kurz warten und erneut versuchen.";
+
+function respondRateLimited(res: Response) {
+  res.status(429).json({ error: "rate_limited", message: RATE_LIMIT_MESSAGE });
+}
 
 export const weatherRouter: Router = Router();
 
@@ -122,6 +133,13 @@ weatherRouter.get("/history", async (req, res) => {
   ].filter((year): year is number => year !== null);
 
   if (failedYears.length > 0) {
+    const rateLimited = [result1, result2].some(
+      (r) => r.status === "rejected" && r.reason instanceof ArchiveRateLimitError,
+    );
+    if (rateLimited) {
+      respondRateLimited(res);
+      return;
+    }
     res.status(502).json({
       error: `failed to fetch historical weather data for year(s): ${failedYears.join(", ")}`,
     });
@@ -169,13 +187,17 @@ weatherRouter.get("/global", async (req, res) => {
     return;
   }
 
-  const { cells, unit, requested, failed } = await buildAnomalyGrid(
+  const { cells, unit, requested, failed, rateLimited } = await buildAnomalyGrid(
     resolution,
     year1,
     year2,
   );
 
   if (failed > requested * 0.5) {
+    if (rateLimited) {
+      respondRateLimited(res);
+      return;
+    }
     res.status(502).json({
       error: "failed to fetch historical weather data for most of the grid",
     });
@@ -271,7 +293,93 @@ weatherRouter.get("/extremes", async (req, res) => {
       },
     });
   } catch (error) {
+    if (error instanceof ArchiveRateLimitError) {
+      respondRateLimited(res);
+      return;
+    }
     console.error("extremes fetch failed:", error);
     res.status(502).json({ error: "failed to fetch extreme weather data" });
   }
+});
+
+// Per-day extreme-day flags for a single year, used to render a
+// GitHub-contribution-style calendar. Only ever requested for the current
+// in-progress year by the frontend, so nothing here is cached — see
+// getDailyExtremeFlags.
+weatherRouter.get("/extremes/daily", async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    res.status(400).json({ error: "lat and lng query params must be numbers" });
+    return;
+  }
+
+  const currentYear = new Date().getUTCFullYear();
+  const parsedYear = parseSingleYear(req, currentYear, currentYear);
+  if ("error" in parsedYear) {
+    res.status(400).json({ error: parsedYear.error });
+    return;
+  }
+  const { year } = parsedYear;
+
+  const { latGrid, lngGrid } = snapToGrid(lat, lng);
+
+  try {
+    const days = await getDailyExtremeFlags(latGrid, lngGrid, year);
+    res.json({ coordinates: { lat, lng, latGrid, lngGrid }, year, days });
+  } catch (error) {
+    if (error instanceof ArchiveRateLimitError) {
+      respondRateLimited(res);
+      return;
+    }
+    console.error("daily extremes fetch failed:", error);
+    res.status(502).json({ error: "failed to fetch daily extreme weather data" });
+  }
+});
+
+// Extreme-day counts for every complete year on record (1940 through the
+// last full year), one point per year — the current in-progress year is
+// excluded so its partial count doesn't distort the intensity scale, same
+// reasoning as /history and /global comparing complete years only.
+weatherRouter.get("/extremes/history", async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    res.status(400).json({ error: "lat and lng query params must be numbers" });
+    return;
+  }
+
+  const lastFullYear = new Date().getUTCFullYear() - 1;
+  const { latGrid, lngGrid } = snapToGrid(lat, lng);
+
+  const { years, requested, failed, rateLimited } = await getExtremeDayCountsRange(
+    latGrid,
+    lngGrid,
+    ARCHIVE_START_YEAR,
+    lastFullYear,
+  );
+
+  if (failed > requested * 0.5) {
+    if (rateLimited) {
+      respondRateLimited(res);
+      return;
+    }
+    res.status(502).json({
+      error: "failed to fetch extreme weather data for most of the range",
+    });
+    return;
+  }
+
+  res.json({
+    coordinates: { lat, lng, latGrid, lngGrid },
+    years,
+    thresholds: {
+      hotDayMaxC: HOT_DAY_MAX_C,
+      frostDayMinC: FROST_DAY_MIN_C,
+      heavyRainMm: HEAVY_RAIN_MM,
+      stormGustKmh: STORM_GUST_KMH,
+    },
+  });
 });

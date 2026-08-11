@@ -28,6 +28,18 @@ const REQUEST_TIMEOUT_MS = 20000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Thrown once the retry budget is exhausted while Open-Meteo keeps
+// answering 429 — kept as its own type (rather than a generic Error) so
+// callers can tell "the upstream is rate-limited right now" apart from any
+// other failure and surface that distinction to the user instead of a
+// generic "something went wrong".
+export class ArchiveRateLimitError extends Error {
+  constructor() {
+    super("archive API rate limit exceeded");
+    this.name = "ArchiveRateLimitError";
+  }
+}
+
 // Open-Meteo's free archive API throttles bursts of concurrent requests
 // with a bare 429 (no Retry-After header) — back off with exponential
 // delay + jitter instead of failing the whole grid/backfill on the first
@@ -47,13 +59,16 @@ async function fetchArchiveJson(url: string): Promise<any> {
     if (res.ok) {
       return res.json();
     }
-    if (res.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
-      await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt + Math.random() * 300);
-      continue;
+    if (res.status === 429) {
+      if (attempt < MAX_RATE_LIMIT_RETRIES) {
+        await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt + Math.random() * 300);
+        continue;
+      }
+      throw new ArchiveRateLimitError();
     }
     throw new Error(`archive API responded with ${res.status}`);
   }
-  throw new Error("archive API rate-limit retries exhausted");
+  throw new ArchiveRateLimitError();
 }
 
 // timezone is forced to UTC (not "auto") so date labels never shift with the
@@ -139,29 +154,49 @@ export interface ExtremeDayCountsResult {
   daysWithData: number;
 }
 
-export function countExtremeDays(
-  variables: DailyExtremeVariables,
-): ExtremeDayCountsResult {
-  const { dates, tempMax, tempMin, precipitationSum, windGustsMax } = variables;
-  let hotDays = 0;
-  let frostDays = 0;
-  let heavyRainDays = 0;
-  let stormDays = 0;
-  let daysWithData = 0;
+export interface DailyExtremeFlags {
+  date: string;
+  hotDay: boolean;
+  frostDay: boolean;
+  heavyRainDay: boolean;
+  stormDay: boolean;
+  hasData: boolean;
+}
 
-  dates.forEach((_, i) => {
+export function classifyExtremeDays(
+  variables: DailyExtremeVariables,
+): DailyExtremeFlags[] {
+  const { dates, tempMax, tempMin, precipitationSum, windGustsMax } = variables;
+
+  return dates.map((date, i) => {
     const max = tempMax[i];
     const min = tempMin[i];
     const rain = precipitationSum[i];
     const gust = windGustsMax[i];
-    if (max == null && min == null && rain == null && gust == null) return;
-    daysWithData += 1;
+    const hasData = !(max == null && min == null && rain == null && gust == null);
 
-    if (max != null && max >= HOT_DAY_MAX_C) hotDays += 1;
-    if (min != null && min < FROST_DAY_MIN_C) frostDays += 1;
-    if (rain != null && rain >= HEAVY_RAIN_MM) heavyRainDays += 1;
-    if (gust != null && gust >= STORM_GUST_KMH) stormDays += 1;
+    return {
+      date,
+      hotDay: max != null && max >= HOT_DAY_MAX_C,
+      frostDay: min != null && min < FROST_DAY_MIN_C,
+      heavyRainDay: rain != null && rain >= HEAVY_RAIN_MM,
+      stormDay: gust != null && gust >= STORM_GUST_KMH,
+      hasData,
+    };
   });
+}
 
-  return { hotDays, frostDays, heavyRainDays, stormDays, daysWithData };
+export function countExtremeDays(
+  variables: DailyExtremeVariables,
+): ExtremeDayCountsResult {
+  return classifyExtremeDays(variables).reduce(
+    (acc, day) => ({
+      hotDays: acc.hotDays + (day.hotDay ? 1 : 0),
+      frostDays: acc.frostDays + (day.frostDay ? 1 : 0),
+      heavyRainDays: acc.heavyRainDays + (day.heavyRainDay ? 1 : 0),
+      stormDays: acc.stormDays + (day.stormDay ? 1 : 0),
+      daysWithData: acc.daysWithData + (day.hasData ? 1 : 0),
+    }),
+    { hotDays: 0, frostDays: 0, heavyRainDays: 0, stormDays: 0, daysWithData: 0 },
+  );
 }

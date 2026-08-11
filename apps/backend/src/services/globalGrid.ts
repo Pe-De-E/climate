@@ -1,5 +1,6 @@
 import { getOrFetchYear } from "./monthlyClimateCache.js";
 import { mapWithConcurrency } from "./concurrency.js";
+import { ArchiveRateLimitError } from "./openMeteoArchive.js";
 
 // Open-Meteo's free archive API throttles bursts well below 8 concurrent
 // connections (observed 429s at that level even with retries) — 4 stays
@@ -57,6 +58,9 @@ export async function buildAnomalyGrid(
   const cells: AnomalyCell[] = [];
   let unit = "°C";
   let failed = 0;
+  const rateLimited = settled.some(
+    (r) => r.status === "rejected" && r.reason instanceof ArchiveRateLimitError,
+  );
 
   points.forEach((point, i) => {
     const r1 = settled[i * 2]!;
@@ -79,5 +83,5 @@ export async function buildAnomalyGrid(
     });
   });
 
-  return { cells, unit, requested: points.length, failed };
+  return { cells, unit, requested: points.length, failed, rateLimited };
 }

@@ -2,7 +2,10 @@ import { ExtremeDayCounts } from "../models/ExtremeDayCounts.js";
 import {
   fetchDailyExtremeVariables,
   countExtremeDays,
+  classifyExtremeDays,
+  ArchiveRateLimitError,
   type ExtremeDayCountsResult,
+  type DailyExtremeFlags,
 } from "./openMeteoArchive.js";
 import { mapWithConcurrency } from "./concurrency.js";
 import { BASELINE_START_YEAR, BASELINE_END_YEAR } from "./extremeThresholds.js";
@@ -52,6 +55,62 @@ export async function getOrFetchExtremeDayCounts(
   return counts;
 }
 
+// Only ever called for the current in-progress year (see the calendar
+// endpoint) — that year is already never cached by
+// getOrFetchExtremeDayCounts, so there's nothing to persist here either.
+export async function getDailyExtremeFlags(
+  latGrid: number,
+  lngGrid: number,
+  year: number,
+): Promise<DailyExtremeFlags[]> {
+  const variables = await fetchDailyExtremeVariables(latGrid, lngGrid, year);
+  return classifyExtremeDays(variables);
+}
+
+export interface ExtremeDayCountsForYear extends ExtremeDayCountsResult {
+  year: number;
+}
+
+// Every year in the range is cached individually (permanently, except the
+// current in-progress year) via getOrFetchExtremeDayCounts, so repeat calls
+// for the same location are cheap once warm.
+export async function getExtremeDayCountsRange(
+  latGrid: number,
+  lngGrid: number,
+  startYear: number,
+  endYear: number,
+): Promise<{
+  years: ExtremeDayCountsForYear[];
+  requested: number;
+  failed: number;
+  rateLimited: boolean;
+}> {
+  const years = Array.from(
+    { length: endYear - startYear + 1 },
+    (_, i) => startYear + i,
+  );
+
+  const settled = await mapWithConcurrency(years, CONCURRENCY_LIMIT, (year) =>
+    getOrFetchExtremeDayCounts(latGrid, lngGrid, year),
+  );
+
+  const results: ExtremeDayCountsForYear[] = [];
+  let failed = 0;
+  const rateLimited = settled.some(
+    (r) => r.status === "rejected" && r.reason instanceof ArchiveRateLimitError,
+  );
+
+  settled.forEach((result, i) => {
+    if (result.status !== "fulfilled") {
+      failed++;
+      return;
+    }
+    results.push({ year: years[i]!, ...result.value });
+  });
+
+  return { years: results, requested: years.length, failed, rateLimited };
+}
+
 export interface BaselineAverage {
   hotDays: number;
   frostDays: number;
@@ -82,7 +141,16 @@ export async function getBaselineAverage(
   );
 
   if (fulfilled.length === 0) {
-    throw new Error("failed to compute baseline: no baseline years available");
+    // Surface the actual first failure (e.g. ArchiveRateLimitError) instead
+    // of masking it behind a generic message — callers need to tell "rate
+    // limited" apart from other failures.
+    const firstRejected = settled.find(
+      (r): r is PromiseRejectedResult => r.status === "rejected",
+    );
+    throw (
+      firstRejected?.reason ??
+      new Error("failed to compute baseline: no baseline years available")
+    );
   }
 
   const sum = (pick: (c: ExtremeDayCountsResult) => number) =>
