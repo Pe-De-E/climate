@@ -49,6 +49,41 @@ export const DAILY_FLAG_KEY: Record<keyof ExtremeDayCounts, DailyFlagKey> = {
   stormDays: "stormDay",
 };
 
+export interface StreakInfo {
+  length: number;
+  startDate: string;
+  endDate: string;
+}
+
+// Longest run of consecutive calendar days matching the category's flag —
+// e.g. the longest unbroken heatwave. Days are already one-per-calendar-day
+// in order (see fetchDailyExtremeVariables), so a simple array-adjacency
+// scan is equivalent to a date-based one.
+export function longestStreak(
+  days: DailyExtremeFlags[],
+  category: keyof ExtremeDayCounts,
+): StreakInfo | null {
+  const flagKey = DAILY_FLAG_KEY[category];
+  let best: StreakInfo | null = null;
+  let currentStart: string | null = null;
+  let currentLength = 0;
+
+  days.forEach((day) => {
+    if (!day[flagKey]) {
+      currentLength = 0;
+      currentStart = null;
+      return;
+    }
+    if (currentLength === 0) currentStart = day.date;
+    currentLength += 1;
+    if (!best || currentLength > best.length) {
+      best = { length: currentLength, startDate: currentStart!, endDate: day.date };
+    }
+  });
+
+  return best;
+}
+
 export const EXTREME_CATEGORIES: ExtremeCategory[] = [
   {
     key: "hotDays",

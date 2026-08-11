@@ -3,8 +3,10 @@
 import {
   DAILY_FLAG_KEY,
   EXTREME_CATEGORIES,
+  longestStreak,
   type DailyExtremeFlags,
   type ExtremeDayCounts,
+  type StreakInfo,
 } from "./extremeCategories";
 
 type ExtremeCategoryKey = keyof ExtremeDayCounts;
@@ -56,6 +58,22 @@ function buildWeeks(
   return weeks;
 }
 
+const formatDay = (iso: string) =>
+  new Intl.DateTimeFormat("de-DE", { day: "numeric" }).format(new Date(`${iso}T00:00:00Z`));
+
+const formatDayMonth = (iso: string) =>
+  new Intl.DateTimeFormat("de-DE", { day: "numeric", month: "long" }).format(
+    new Date(`${iso}T00:00:00Z`),
+  );
+
+function formatStreakRange(streak: StreakInfo) {
+  if (streak.startDate === streak.endDate) return formatDayMonth(streak.startDate);
+  const sameMonth = streak.startDate.slice(5, 7) === streak.endDate.slice(5, 7);
+  return sameMonth
+    ? `${formatDay(streak.startDate)}.–${formatDayMonth(streak.endDate)}`
+    : `${formatDayMonth(streak.startDate)} – ${formatDayMonth(streak.endDate)}`;
+}
+
 function monthLabelsForWeeks(weeks: CalendarCell[][]) {
   const labels: (string | null)[] = [];
   let lastMonth = -1;
@@ -89,7 +107,9 @@ export const ExtremeDayCalendar = ({
   const weeks = buildWeeks(days, flagKey);
   const monthLabels = monthLabelsForWeeks(weeks);
   const activeCount = days.filter((d) => d[flagKey]).length;
+  const streak = longestStreak(days, category);
   const color = EXTREME_CATEGORIES.find((c) => c.key === category)!.color;
+  const isInProgressYear = year === new Date().getUTCFullYear();
   const cellSize = 11;
   const cellGap = 3;
 
@@ -100,13 +120,21 @@ export const ExtremeDayCalendar = ({
           display: "flex",
           justifyContent: "space-between",
           alignItems: "baseline",
-          marginBottom: 8,
+          marginBottom: 4,
         }}
       >
-        <span style={{ fontSize: 13, fontWeight: 600 }}>{year} bis heute</span>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>
+          {isInProgressYear ? `${year} bis heute` : year}
+        </span>
         <span style={{ fontSize: 12, color: "var(--foreground-muted, #9aa0ab)" }}>
           {activeCount} Tage
         </span>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--foreground-muted, #9aa0ab)", marginBottom: 8 }}>
+        Längste Serie:{" "}
+        {streak
+          ? `${streak.length} ${streak.length === 1 ? "Tag" : "Tage"} (${formatStreakRange(streak)})`
+          : "–"}
       </div>
       <div style={{ overflowX: "auto" }}>
         <div style={{ display: "inline-flex", flexDirection: "column", gap: 4 }}>

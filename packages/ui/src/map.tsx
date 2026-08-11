@@ -450,6 +450,7 @@ export const Map = ({
   const handleSelectExtremesYear = (year: number) => {
     if (!lastLatLng) return;
     loadExtremes(lastLatLng.lat, lastLatLng.lng, year);
+    loadDailyCalendar(lastLatLng.lat, lastLatLng.lng, year);
   };
 
   const handleSelectPastYear = (year: number) => {
@@ -484,8 +485,8 @@ export const Map = ({
   };
 
   const handleRetryDailyCalendar = () => {
-    if (!lastLatLng) return;
-    loadDailyCalendar(lastLatLng.lat, lastLatLng.lng, new Date().getUTCFullYear());
+    if (!lastLatLng || lastExtremesYearRef.current === null) return;
+    loadDailyCalendar(lastLatLng.lat, lastLatLng.lng, lastExtremesYearRef.current);
   };
 
   const handleRetryExtremesHistory = () => {
@@ -598,21 +599,17 @@ export const Map = ({
     };
   }, [globalGrid?.status]);
 
-  // Extreme-day counts are only fetched once the Extremwetter tab is
-  // actually opened — a cold-cache baseline lookup can cost dozens of
-  // archive API calls, so it shouldn't fire on every map click.
+  // Extreme-day counts (and the matching daily calendar) are only fetched
+  // once the Extremwetter tab is actually opened — a cold-cache baseline
+  // lookup can cost dozens of archive API calls, so it shouldn't fire on
+  // every map click. Both are loaded for the same year and stay in sync
+  // from here on via handleSelectExtremesYear.
   useEffect(() => {
     if (activeTab !== "extremwetter" || !lastLatLng || !session) return;
     if (session.extremes !== null) return;
-    loadExtremes(lastLatLng.lat, lastLatLng.lng, new Date().getUTCFullYear() - 1);
-  }, [activeTab, session, lastLatLng]);
-
-  // The current-year calendar is fetched alongside the extreme-day counts,
-  // same on-demand reasoning.
-  useEffect(() => {
-    if (activeTab !== "extremwetter" || !lastLatLng || !session) return;
-    if (session.dailyCalendar !== null) return;
-    loadDailyCalendar(lastLatLng.lat, lastLatLng.lng, new Date().getUTCFullYear());
+    const year = new Date().getUTCFullYear() - 1;
+    loadExtremes(lastLatLng.lat, lastLatLng.lng, year);
+    loadDailyCalendar(lastLatLng.lat, lastLatLng.lng, year);
   }, [activeTab, session, lastLatLng]);
 
   // The Langzeitverlauf tab covers every year back to 1940 — even more
