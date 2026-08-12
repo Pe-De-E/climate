@@ -53,6 +53,7 @@ Backend-Env anlegen (`apps/backend/.env`, Vorlage: `apps/backend/.env.example`):
 ```env
 MONGODB_URI=mongodb+srv://<user>:<password>@<cluster-host>/<db-name>?retryWrites=true&w=majority
 PORT=3001
+FRONTEND_URL=http://localhost:3000
 ```
 
 Frontend-Env anlegen (`apps/frontend/.env.local`, Vorlage: `apps/frontend/.env.example`):
