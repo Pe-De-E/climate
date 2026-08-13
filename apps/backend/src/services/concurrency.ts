@@ -1,3 +1,38 @@
+// A process-wide gate, as opposed to mapWithConcurrency's per-batch limit —
+// needed for call sites that issue one-off requests (not a batch) but still
+// have to share the same upstream rate-limit budget as every batched caller.
+export interface Semaphore {
+  acquire: () => Promise<void>;
+  release: () => void;
+}
+
+export function createSemaphore(limit: number): Semaphore {
+  let active = 0;
+  const queue: (() => void)[] = [];
+
+  const acquire = () => {
+    if (active < limit) {
+      active++;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => queue.push(resolve));
+  };
+
+  const release = () => {
+    const next = queue.shift();
+    if (next) {
+      // Hand the slot directly to the next waiter instead of decrementing
+      // `active` — otherwise a burst of new acquire() calls arriving before
+      // the queue drains could squeeze in and exceed the limit.
+      next();
+    } else {
+      active--;
+    }
+  };
+
+  return { acquire, release };
+}
+
 export async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,

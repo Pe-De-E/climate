@@ -4,6 +4,7 @@ import {
   HEAVY_RAIN_MM,
   STORM_GUST_KMH,
 } from "./extremeThresholds.js";
+import { createSemaphore } from "./concurrency.js";
 
 interface DailyMeans {
   dates: string[];
@@ -28,6 +29,15 @@ const REQUEST_TIMEOUT_MS = 20000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Process-wide gate shared by every archive call, regardless of which
+// feature issued it (global grid, local history, extremes, ...) — each used
+// to keep its own separate 4-slot pool, so a local /history click could
+// still stack on top of an in-flight global-grid build and blow past
+// Open-Meteo's real throttle threshold together. One shared budget below
+// that threshold (see CONCURRENCY_LIMIT comments elsewhere) fixes that.
+const ARCHIVE_CONCURRENCY_LIMIT = 4;
+const archiveSemaphore = createSemaphore(ARCHIVE_CONCURRENCY_LIMIT);
+
 // Thrown once the retry budget is exhausted while Open-Meteo keeps
 // answering 429 — kept as its own type (rather than a generic Error) so
 // callers can tell "the upstream is rate-limited right now" apart from any
@@ -45,30 +55,35 @@ export class ArchiveRateLimitError extends Error {
 // delay + jitter instead of failing the whole grid/backfill on the first
 // burst. Shared by every archive query (daily means, daily extremes, ...).
 async function fetchArchiveJson(url: string): Promise<any> {
-  for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
-    let res: Response;
-    try {
-      res = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-    } catch (error) {
-      if (attempt < MAX_RATE_LIMIT_RETRIES) {
-        await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt + Math.random() * 300);
-        continue;
+  await archiveSemaphore.acquire();
+  try {
+    for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
+      let res: Response;
+      try {
+        res = await fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      } catch (error) {
+        if (attempt < MAX_RATE_LIMIT_RETRIES) {
+          await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt + Math.random() * 300);
+          continue;
+        }
+        throw error;
       }
-      throw error;
-    }
-    if (res.ok) {
-      return res.json();
-    }
-    if (res.status === 429) {
-      if (attempt < MAX_RATE_LIMIT_RETRIES) {
-        await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt + Math.random() * 300);
-        continue;
+      if (res.ok) {
+        return await res.json();
       }
-      throw new ArchiveRateLimitError();
+      if (res.status === 429) {
+        if (attempt < MAX_RATE_LIMIT_RETRIES) {
+          await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt + Math.random() * 300);
+          continue;
+        }
+        throw new ArchiveRateLimitError();
+      }
+      throw new Error(`archive API responded with ${res.status}`);
     }
-    throw new Error(`archive API responded with ${res.status}`);
+    throw new ArchiveRateLimitError();
+  } finally {
+    archiveSemaphore.release();
   }
-  throw new ArchiveRateLimitError();
 }
 
 // timezone is forced to UTC (not "auto") so date labels never shift with the

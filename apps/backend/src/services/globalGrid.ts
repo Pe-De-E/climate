@@ -1,4 +1,4 @@
-import { getOrFetchYear } from "./monthlyClimateCache.js";
+import { getOrFetchYear, getCachedYears, cacheKey } from "./monthlyClimateCache.js";
 import { mapWithConcurrency } from "./concurrency.js";
 import { ArchiveRateLimitError } from "./openMeteoArchive.js";
 import { GlobalAnomalyGrid } from "../models/GlobalAnomalyGrid.js";
@@ -52,9 +52,31 @@ export async function buildAnomalyGrid(
     { point, year: year2 },
   ]);
 
-  const settled = await mapWithConcurrency(tasks, CONCURRENCY_LIMIT, (t) =>
-    getOrFetchYear(t.point.lat, t.point.lng, t.year),
+  // One bulk read instead of one findOne per (point, year) — on a warm
+  // cache (the common case once the grid has been built at least once) this
+  // turns what used to be ~29k sequential Mongo round trips into a single
+  // query, which is the actual reason a "fully cached" grid was still slow.
+  const cache = await getCachedYears(points, [year1, year2]);
+
+  type YearResult = { monthlyMeans: (number | null)[]; unit: string };
+  const settled: PromiseSettledResult<YearResult>[] = new Array(tasks.length);
+  const missing: number[] = [];
+
+  tasks.forEach((t, i) => {
+    const hit = cache.get(cacheKey(t.point.lat, t.point.lng, t.year));
+    if (hit) {
+      settled[i] = { status: "fulfilled", value: hit };
+    } else {
+      missing.push(i);
+    }
+  });
+
+  const settledMissing = await mapWithConcurrency(missing, CONCURRENCY_LIMIT, (i) =>
+    getOrFetchYear(tasks[i]!.point.lat, tasks[i]!.point.lng, tasks[i]!.year),
   );
+  missing.forEach((taskIndex, j) => {
+    settled[taskIndex] = settledMissing[j]!;
+  });
 
   const cells: AnomalyCell[] = [];
   let unit = "°C";
