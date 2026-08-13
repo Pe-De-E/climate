@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { Modal } from "./modal";
@@ -639,6 +639,55 @@ export const Map = ({
     }
   }, [mode, globalGrid]);
 
+  // A plain object, not a Map instance — inside this component, the
+  // identifier `Map` refers to this component itself, shadowing the
+  // built-in Map constructor.
+  const globalDeltaByCell = useMemo(() => {
+    if (globalGrid?.status !== "done") return null;
+    const lookup: Record<string, number> = {};
+    globalGrid.value.cells.forEach((cell) => {
+      lookup[`${cell.lat},${cell.lng}`] = cell.delta;
+    });
+    return lookup;
+  }, [globalGrid]);
+
+  const [hoverCell, setHoverCell] = useState<
+    { x: number; y: number; delta: number } | null
+  >(null);
+
+  // The grid cells themselves are rendered as non-interactive canvas shapes
+  // (buildGridLayer) — at ~14k cells for the default resolution, binding a
+  // tooltip to every rectangle would mean per-shape hit-testing on every
+  // mousemove. A single map-level listener that snaps the cursor to its
+  // grid cell and looks the delta up is effectively free by comparison.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || mode !== "global" || !globalDeltaByCell) return;
+
+    const onMouseMove = (e: L.LeafletMouseEvent) => {
+      const snapLat = Math.round(e.latlng.lat / GLOBAL_RESOLUTION) * GLOBAL_RESOLUTION;
+      const normalizedLng = (((e.latlng.lng + 180) % 360) + 360) % 360 - 180;
+      let snapLng = Math.round(normalizedLng / GLOBAL_RESOLUTION) * GLOBAL_RESOLUTION;
+      if (snapLng === 180) snapLng = -180;
+
+      const delta = globalDeltaByCell[`${snapLat},${snapLng}`];
+      if (delta === undefined) {
+        setHoverCell(null);
+        return;
+      }
+      setHoverCell({ x: e.originalEvent.clientX, y: e.originalEvent.clientY, delta });
+    };
+    const onMouseOut = () => setHoverCell(null);
+
+    map.on("mousemove", onMouseMove);
+    map.on("mouseout", onMouseOut);
+    return () => {
+      map.off("mousemove", onMouseMove);
+      map.off("mouseout", onMouseOut);
+      setHoverCell(null);
+    };
+  }, [mode, globalDeltaByCell]);
+
   return (
     <>
       <style>{`
@@ -754,6 +803,29 @@ export const Map = ({
       )}
       {mode === "global" && globalGrid?.status === "done" && (
         <GlobalAnomalyLegend unit={globalGrid.value.unit} />
+      )}
+      {mode === "global" && globalGrid?.status === "done" && hoverCell && (
+        <div
+          style={{
+            position: "fixed",
+            left: hoverCell.x + 14,
+            top: hoverCell.y + 14,
+            zIndex: 1000,
+            pointerEvents: "none",
+            background: "var(--surface, #1a1d24)",
+            border: "1px solid var(--border, #2a2d36)",
+            borderRadius: 6,
+            padding: "4px 8px",
+            fontSize: 12,
+            fontWeight: 600,
+            color: colorForDelta(hoverCell.delta),
+            whiteSpace: "nowrap",
+          }}
+        >
+          {hoverCell.delta > 0 ? "+" : ""}
+          {hoverCell.delta.toFixed(1)}
+          {globalGrid.value.unit}
+        </div>
       )}
       <Modal
         open={!!session}

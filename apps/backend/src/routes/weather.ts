@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import { getOrFetchYear } from "../services/monthlyClimateCache.js";
-import { buildAnomalyGrid, buildGridPoints } from "../services/globalGrid.js";
+import { getOrBuildAnomalyGrid, buildGridPoints } from "../services/globalGrid.js";
 import { MonthlyClimate } from "../models/MonthlyClimate.js";
 import {
   getOrFetchExtremeDayCounts,
@@ -187,7 +187,7 @@ weatherRouter.get("/global", async (req, res) => {
     return;
   }
 
-  const { cells, unit, requested, failed, rateLimited } = await buildAnomalyGrid(
+  const { cells, unit, requested, failed, rateLimited } = await getOrBuildAnomalyGrid(
     resolution,
     year1,
     year2,

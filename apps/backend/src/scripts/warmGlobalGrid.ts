@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { connectDB } from "../db.js";
-import { buildAnomalyGrid } from "../services/globalGrid.js";
+import { getOrBuildAnomalyGrid } from "../services/globalGrid.js";
 
 const DEFAULT_YEARS_AGO = 40;
 const RESOLUTION = 2;
@@ -17,7 +17,7 @@ async function main() {
   );
   const start = Date.now();
 
-  const { cells, requested, failed } = await buildAnomalyGrid(
+  const { cells, requested, failed } = await getOrBuildAnomalyGrid(
     RESOLUTION,
     year1,
     year2,
