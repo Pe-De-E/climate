@@ -30,6 +30,12 @@ const TILE_SIZE_PX = 256;
 const minZoomForWidth = (widthPx: number) =>
   Math.max(0, Math.ceil(Math.log2(widthPx / TILE_SIZE_PX)));
 
+// The global anomaly grid doesn't cover the poles (keep in sync with
+// LAT_LIMIT in apps/backend/src/services/globalGrid.ts) — clamping the map's
+// vertical bounds to the same latitude keeps users from panning/zooming into
+// the uncovered strip instead of just showing it empty.
+const MAP_LAT_LIMIT = 84;
+
 const reverseGeocode = async (lat: number, lng: number) => {
   const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`;
   const res = await fetch(url);
@@ -511,7 +517,10 @@ export const Map = ({
     import("leaflet").then((L) => {
       if (cancelled || !containerRef.current || mapRef.current) return;
 
-      const worldBounds = L.latLngBounds([-90, -180], [90, 180]);
+      const worldBounds = L.latLngBounds(
+        [-MAP_LAT_LIMIT, -180],
+        [MAP_LAT_LIMIT, 180],
+      );
       const map = L.map(containerRef.current, {
         zoomControl: false,
         minZoom: minZoomForWidth(containerRef.current.clientWidth),

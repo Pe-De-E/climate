@@ -7,9 +7,12 @@ import { GlobalAnomalyGrid } from "../models/GlobalAnomalyGrid.js";
 // connections (observed 429s at that level even with retries) — 4 stays
 // under that threshold while still parallelizing meaningfully.
 const CONCURRENCY_LIMIT = 4;
-// Web Mercator's usable latitude range tops out around ±85.05°; staying
-// inside ±80 keeps every grid cell renderable without edge distortion.
-const LAT_LIMIT = 80;
+// Web Mercator's usable latitude range tops out around ±85.05° — 84 gets
+// close to that ceiling while staying a clean multiple of every allowed
+// resolution. The map's maxBounds (packages/ui/src/map.tsx) is clamped to
+// the same value so users can't pan/zoom into the poles this grid can't
+// cover — keep the two in sync.
+const LAT_LIMIT = 84;
 
 export interface GridPoint {
   lat: number;
