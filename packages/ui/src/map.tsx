@@ -21,6 +21,15 @@ const TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
 const TILE_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
 
+// Leaflet's world wraps horizontally by default and has no built-in "don't
+// zoom out past one world" option — below this zoom, the rendered world is
+// narrower than the viewport, so repeated copies become visible (and the
+// anomaly overlay, which is only drawn once per data point, is missing from
+// every copy but the first). Standard slippy-map tile size is 256px.
+const TILE_SIZE_PX = 256;
+const minZoomForWidth = (widthPx: number) =>
+  Math.max(0, Math.ceil(Math.log2(widthPx / TILE_SIZE_PX)));
+
 const reverseGeocode = async (lat: number, lng: number) => {
   const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`;
   const res = await fetch(url);
@@ -296,6 +305,7 @@ export const Map = ({
   const mapRef = useRef<L.Map | null>(null);
   const leafletRef = useRef<typeof import("leaflet") | null>(null);
   const gridLayerRef = useRef<L.LayerGroup | null>(null);
+  const resizeHandlerRef = useRef<() => void>(() => {});
   const [mapReady, setMapReady] = useState(false);
   const [session, setSession] = useState<LocalSession | null>(null);
   const [lastLatLng, setLastLatLng] = useState<{ lat: number; lng: number } | null>(
@@ -501,12 +511,24 @@ export const Map = ({
     import("leaflet").then((L) => {
       if (cancelled || !containerRef.current || mapRef.current) return;
 
-      const map = L.map(containerRef.current, { zoomControl: false }).setView(
-        center,
-        zoom,
-      );
+      const worldBounds = L.latLngBounds([-90, -180], [90, 180]);
+      const map = L.map(containerRef.current, {
+        zoomControl: false,
+        minZoom: minZoomForWidth(containerRef.current.clientWidth),
+        maxBounds: worldBounds,
+        maxBoundsViscosity: 1,
+      }).setView(center, zoom);
       L.control.zoom({ position: "topright" }).addTo(map);
       L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION }).addTo(map);
+
+      // minZoom depends on the container's actual pixel width, which can
+      // change (window resize, sidebar toggling, ...) after mount.
+      const updateMinZoom = () => {
+        if (!containerRef.current) return;
+        map.setMinZoom(minZoomForWidth(containerRef.current.clientWidth));
+      };
+      resizeHandlerRef.current = updateMinZoom;
+      window.addEventListener("resize", updateMinZoom);
       map.on("click", (e) => {
         if (!modeRef.current || !CLICK_DETAIL_MODES.includes(modeRef.current)) {
           return;
@@ -561,6 +583,7 @@ export const Map = ({
 
     return () => {
       cancelled = true;
+      window.removeEventListener("resize", resizeHandlerRef.current);
       mapRef.current?.remove();
       mapRef.current = null;
     };
